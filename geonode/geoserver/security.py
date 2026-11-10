@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 def delete_all_geofence_rules():
     """purge all existing GeoFence Rules"""
-    if settings.OGC_SERVER["default"]["GEOFENCE_SECURITY_ENABLED"] or getattr(
+    if settings.GEOSERVER_SECURITY_ENABLED or getattr(
         settings, "GEOFENCE_SECURITY_ENABLED", False
     ):
         gf_utils.delete_all_rules()
@@ -56,7 +56,7 @@ def delete_geofence_rules_for_layer(instance):
     """Delete all rules for a given layer
     This function wraps the gf_util method, since it doesn't know about Dataset model
     """
-    if settings.OGC_SERVER["default"]["GEOFENCE_SECURITY_ENABLED"] or getattr(
+    if settings.GEOSERVER_SECURITY_ENABLED or getattr(
         settings, "GEOFENCE_SECURITY_ENABLED", False
     ):
         resource = instance.get_self_resource()
@@ -72,7 +72,7 @@ def delete_geofence_rules_for_layer(instance):
 
 def invalidate_geofence_cache():
     """invalidate GeoFence Cache Rules"""
-    if settings.OGC_SERVER["default"]["GEOFENCE_SECURITY_ENABLED"]:
+    if settings.GEOSERVER_SECURITY_ENABLED:
         try:
             geofence.invalidate_cache()
             return True
@@ -84,7 +84,7 @@ def invalidate_geofence_cache():
 
 def toggle_dataset_cache(dataset_name, enable=True, filters=None, formats=None):
     """Disable/enable a GeoServer Tiled Dataset Configuration"""
-    if settings.OGC_SERVER["default"]["GEOFENCE_SECURITY_ENABLED"]:
+    if settings.GEOSERVER_SECURITY_ENABLED:
         try:
             url = settings.OGC_SERVER["default"]["LOCATION"]
             user = settings.OGC_SERVER["default"]["USER"]
@@ -178,7 +178,7 @@ def toggle_dataset_cache(dataset_name, enable=True, filters=None, formats=None):
 
 def delete_dataset_cache(dataset_name):
     """Delete a GeoServer Tiled Dataset Configuration and all the cache"""
-    if settings.OGC_SERVER["default"]["GEOFENCE_SECURITY_ENABLED"]:
+    if settings.GEOSERVER_SECURITY_ENABLED:
         try:
             url = settings.OGC_SERVER["default"]["LOCATION"]
             user = settings.OGC_SERVER["default"]["USER"]
@@ -345,6 +345,7 @@ def sync_resources_with_guardian(resource=None, force=False):
         logger.debug(" --------------------------- synching with guardian!")
 
         rules_committed = False
+        failed_datasets = []
 
         for dataset in datasets:
             if is_remote_resource(dataset):
@@ -375,14 +376,31 @@ def sync_resources_with_guardian(resource=None, force=False):
                         create_geofence_rules(dataset, perms, group=group, batch=batch)
 
                 logger.info(f"Going to synch permissions in GeoFence for resource {dataset}")
-                rules_committed = geofence.run_batch(batch)
-                dataset.clear_dirty_state()
+                # An empty batch is a successful no-op. For a non-empty batch,
+                # only clear the dirty marker after the backend confirms it
+                # committed; the ACL REST adapter can fail partway through its
+                # non-transactional delete/insert sequence.
+                rules_committed = batch.length() == 0 or geofence.run_batch(batch)
+                if rules_committed:
+                    dataset.clear_dirty_state()
+                else:
+                    dataset.set_dirty_state()
+                    failed_datasets.append(str(dataset))
             except Exception as e:
                 logger.exception(e)
                 logger.warning(f"!WARNING! - Failure Synching-up Security Rules for Resource [{dataset}]")
+                dataset.set_dirty_state()
+                failed_datasets.append(str(dataset))
 
         if rules_committed:
             invalidate_geofence_cache()
+
+        if force and failed_datasets:
+            failed = ", ".join(failed_datasets)
+            raise RuntimeError(f"Security rules failed to synchronize for: {failed}")
+        return not failed_datasets
+
+    return True
 
 
 def get_geolimits(layer, username, groupname):

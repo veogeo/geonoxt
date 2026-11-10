@@ -37,8 +37,7 @@ class Command(BaseCommand):
         for index, layer in enumerate(all_datasets):
             print(f"[{(index + 1)} / {len(all_datasets)}] Setting public permissions to Dataset [{layer.name}] ...")
             try:
-                use_geofence = settings.OGC_SERVER['default'].get(
-                    "GEOFENCE_SECURITY_ENABLED", False)
+                use_geofence = settings.GEOSERVER_SECURITY_ENABLED
                 if use_geofence:
                     set_geofence_all(layer)
                 layer.set_default_permissions()

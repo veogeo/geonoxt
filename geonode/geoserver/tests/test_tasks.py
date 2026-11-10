@@ -1,7 +1,13 @@
 from unittest.mock import create_autospec, patch
 
 from geonode.base.populate_test_data import all_public, create_models, remove_models
-from geonode.geoserver.tasks import geoserver_create_style, geoserver_set_style
+from geonode.geoserver.tasks import (
+    geoserver_create_style,
+    geoserver_delete_security_rules,
+    geoserver_set_style,
+    synch_guardian,
+)
+from geonode.geoserver.geofence import Batch
 from geonode.geoserver.signals import geoserver_automatic_default_style_set
 from geonode.layers.models import Dataset
 from geonode.layers.populate_datasets_data import create_dataset_data
@@ -30,6 +36,24 @@ class TasksTest(GeoNodeBaseTestSupport):
 
     def mock_signal_callback(self, instance, **kwargs):
         pass
+
+    @patch("geonode.geoserver.tasks.sync_resources_with_guardian", return_value=False)
+    def test_security_sync_task_retries_when_rules_remain_pending(self, mock_sync):
+        with self.assertRaises(RuntimeError):
+            synch_guardian.run()
+
+        mock_sync.assert_called_once_with()
+
+    @patch("geonode.geoserver.tasks.geofence.run_batch")
+    @patch("geonode.geoserver.tasks.gf_utils.collect_delete_layer_rules")
+    def test_deleted_dataset_security_cleanup_is_safe_when_no_rules_remain(self, mock_collect, mock_run_batch):
+        batch = Batch("test")
+        mock_collect.return_value = batch
+
+        self.assertTrue(geoserver_delete_security_rules.run("workspace", "deleted_layer"))
+
+        mock_collect.assert_called_once_with("workspace", "deleted_layer")
+        mock_run_batch.assert_not_called()
 
     def test_geoserver_style_visual_mode_automatically_with_sld_file(self):
         dataset = Dataset.objects.first()

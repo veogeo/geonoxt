@@ -1899,8 +1899,15 @@ gs_uploader = Client(url, _user, _password)
 
 
 def _create_geofence_client():
-    gf_rest_url = f'{url.rstrip("/")}/geofence/'
-    client = GeoFenceClient(gf_rest_url, _user, _password)
+    if settings.GEOSERVER_SECURITY_BACKEND == "acl":
+        from geonode.geoserver.acl import GeoServerACLClient
+
+        client = GeoServerACLClient(
+            settings.GEOSERVER_ACL_URL, settings.GEOSERVER_ACL_USER, settings.GEOSERVER_ACL_PASSWORD
+        )
+    else:
+        gf_rest_url = f'{url.rstrip("/")}/geofence/'
+        client = GeoFenceClient(gf_rest_url, _user, _password)
     client.set_timeout(ogc_server_settings.GEOFENCE_TIMEOUT)
     return client
 

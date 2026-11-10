@@ -1045,11 +1045,10 @@ class LayerTests(GeoNodeBaseTestSupport):
         width = 512
 
         # Default Style (expect exception since we are offline)
-        style = get_sld_for(gs_catalog, instance)
-        if style and isinstance(style, str):
-            style = gs_catalog.get_style(instance.name, workspace=instance.workspace)
-            self.assertIsNotNone(style)
-            self.assertFalse(isinstance(style, str))
+        from geonode import GeoNodeException
+
+        with self.assertRaises(GeoNodeException):
+            get_sld_for(gs_catalog, instance)
         style_name = "point"
         style_body = """
 <?xml version="1.0" encoding="UTF-8"?>

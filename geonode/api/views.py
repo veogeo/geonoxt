@@ -18,7 +18,9 @@
 #########################################################################
 
 import json
+import hmac
 
+from django.conf import settings
 from django.utils import timezone
 from django.http import HttpResponse
 from django.contrib.auth import get_user_model
@@ -91,6 +93,12 @@ class UserInfoView(APIView):
 
 @csrf_exempt
 def verify_token(request):
+    if getattr(settings, "GEOSERVER_CLOUD_ENABLED", False):
+        expected_key = getattr(settings, "GEOSERVER_CLOUD_INTROSPECTION_API_KEY", "")
+        supplied_key = request.headers.get("X-GeoNode-Introspection-Key", "")
+        if not expected_key or not hmac.compare_digest(supplied_key, expected_key):
+            return HttpResponse(json.dumps({"active": False}), status=401, content_type="application/json")
+
     if request.POST and "token" in request.POST:
         token = None
         try:
@@ -100,22 +108,28 @@ def verify_token(request):
             return HttpResponse(json.dumps({"error": str(e)}), status=403, content_type="application/json")
 
         if token:
-            token_info = json.dumps(
-                {
-                    "client_id": token.application.client_id,
-                    "user_id": token.user.id,
-                    "username": token.user.username,
-                    "issued_to": token.user.username,
-                    "access_token": access_token,
-                    "email": token.user.email,
-                    "verified_email": "true",
-                    "access_type": "online",
-                    "expires_in": (token.expires - timezone.now()).total_seconds() * 1000,
-                }
-            )
+            token_info = {
+                "client_id": token.application.client_id,
+                "user_id": token.user.id,
+                "username": token.user.username,
+                "issued_to": token.user.username,
+                "email": token.user.email,
+                "verified_email": "true",
+                "access_type": "online",
+                "expires_in": (token.expires - timezone.now()).total_seconds() * 1000,
+                "active": True,
+                "sub": token.user.username,
+                "preferred_username": token.user.username,
+                "exp": int(token.expires.timestamp()),
+                "roles": [f"ROLE_{group.name.upper()}" for group in token.user.groups.all()],
+            }
+            if not getattr(settings, "GEOSERVER_CLOUD_ENABLED", False):
+                # Preserve the legacy GeoServer tokeninfo response outside Cloud mode.
+                token_info["access_token"] = access_token
 
-            response = HttpResponse(token_info, content_type="application/json")
-            response["Authorization"] = f"Bearer {access_token}"
+            response = HttpResponse(json.dumps(token_info), content_type="application/json")
+            if not getattr(settings, "GEOSERVER_CLOUD_ENABLED", False):
+                response["Authorization"] = f"Bearer {access_token}"
             return response
         else:
             return HttpResponse(

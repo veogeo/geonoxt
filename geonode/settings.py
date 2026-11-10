@@ -24,6 +24,7 @@ import ast
 import sys
 import logging
 import subprocess
+from pathlib import Path
 import dj_database_url
 from urllib.parse import urlparse, urljoin
 
@@ -31,6 +32,7 @@ from urllib.parse import urlparse, urljoin
 # General Django development settings
 #
 from django.conf.global_settings import DATETIME_INPUT_FORMATS
+from django.core.exceptions import ImproperlyConfigured
 from geonode.documents.enumerations import DOCUMENT_TYPE_MAP
 from geonode import get_version
 from kombu import Queue, Exchange
@@ -814,6 +816,9 @@ AUTHENTICATION_BACKENDS = (
 if "announcements" in INSTALLED_APPS:
     AUTHENTICATION_BACKENDS += ("announcements.auth_backends.AnnouncementPermissionsBackend",)
 
+GEOSERVER_CLOUD_ENABLED = ast.literal_eval(os.getenv("GEOSERVER_CLOUD_ENABLED", "False"))
+GEOSERVER_CLOUD_INTROSPECTION_API_KEY = os.getenv("GEOSERVER_CLOUD_INTROSPECTION_API_KEY", "")
+
 OAUTH2_PROVIDER = {
     "SCOPES": {
         "openid": "Default to OpenID",
@@ -824,9 +829,18 @@ OAUTH2_PROVIDER = {
     "CLIENT_ID_GENERATOR_CLASS": "oauth2_provider.generators.ClientIdGenerator",
     # OpenID Connect
     "OIDC_ENABLED": True,
-    "OIDC_ISS_ENDPOINT": SITEURL,
-    "OIDC_USERINFO_ENDPOINT": f"{SITEURL}api/o/v4/tokeninfo/",
-    "OIDC_RSA_PRIVATE_KEY": """-----BEGIN RSA PRIVATE KEY-----
+    "OIDC_ISS_ENDPOINT": os.getenv(
+        "OIDC_ISS_ENDPOINT", f"{SITEURL.rstrip('/')}/o/" if GEOSERVER_CLOUD_ENABLED else SITEURL
+    ),
+    "OIDC_USERINFO_ENDPOINT": os.getenv(
+        "OIDC_USERINFO_ENDPOINT",
+        f"{SITEURL.rstrip('/')}/api/v2/userinfo/" if GEOSERVER_CLOUD_ENABLED else f"{SITEURL}api/o/v4/tokeninfo/",
+    ),
+    "OIDC_RSA_PRIVATE_KEY": (
+        Path(os.environ["OIDC_RSA_PRIVATE_KEY_FILE"]).read_text()
+        if os.getenv("OIDC_RSA_PRIVATE_KEY_FILE")
+        else os.getenv("OIDC_RSA_PRIVATE_KEY")
+        or ("" if GEOSERVER_CLOUD_ENABLED else """-----BEGIN RSA PRIVATE KEY-----
 MIICXQIBAAKBgQCIThjbTwpYu4Lwqp8oA7PqD6Ij/GwpLFJuPbWVaeCDaX6T7mh8
 mJMIEgl/VIZasLH8SwU5mZ4sPeiqk7NgJq1XDo97q5mlFoNVHMCH38KQzSIBWtbq
 WnEEnQdiqBbCmmIebLd4OcfpbIVUI89cnCq7U0M1ie0KOopWSHWOP6/35QIDAQAB
@@ -840,8 +854,14 @@ zbxt6jxunYlXYr9yG7RvNI921HVo2eZU42j8YW5zR6+cGusYUGL4jSo8kLPJAkAG
 SLPi97Rwe7OiVCHJvFxmCI9RYPbJzUO7B0sAB7AuKvMDglF8UAnbTJXDOavrbXrb
 3+N0n9MAwKl9K+zp5pxpAkBSEUlYA0kDUqRgfuAXrrO/JYErGzE0UpaHxq5gCvTf
 g+gp5fQ4nmDrSNHjakzQCX2mKMsx/GLWZzoIDd7ECV9f
------END RSA PRIVATE KEY-----""",
+-----END RSA PRIVATE KEY-----""")
+    ),
 }
+if GEOSERVER_CLOUD_ENABLED and not OAUTH2_PROVIDER["OIDC_RSA_PRIVATE_KEY"]:
+    raise ImproperlyConfigured(
+        "GEOSERVER_CLOUD_ENABLED requires OIDC_RSA_PRIVATE_KEY or OIDC_RSA_PRIVATE_KEY_FILE"
+    )
+
 OAUTH2_PROVIDER_APPLICATION_MODEL = "oauth2_provider.Application"
 OAUTH2_PROVIDER_ACCESS_TOKEN_MODEL = "oauth2_provider.AccessToken"
 OAUTH2_PROVIDER_ID_TOKEN_MODEL = "oauth2_provider.IDToken"
@@ -1011,9 +1031,25 @@ GEOSERVER_ADMIN_PASSWORD = os.getenv("GEOSERVER_ADMIN_PASSWORD", "geoserver")
 # This is the password from Geoserver factory data-dir. It's only used at install time to perform the very first configurfation of GEOSERVER_ADMIN_PASSWORD
 GEOSERVER_FACTORY_PASSWORD = os.getenv("GEOSERVER_FACTORY_PASSWORD", "geoserver")
 
-GEOFENCE_SECURITY_ENABLED = (
-    False if TEST and not INTEGRATION else ast.literal_eval(os.getenv("GEOFENCE_SECURITY_ENABLED", "True"))
+GEOSERVER_SECURITY_BACKEND = os.getenv("GEOSERVER_SECURITY_BACKEND", "").strip().lower()
+if not GEOSERVER_SECURITY_BACKEND:
+    GEOSERVER_SECURITY_BACKEND = "acl" if GEOSERVER_CLOUD_ENABLED else "geofence"
+if GEOSERVER_SECURITY_BACKEND not in {"geofence", "acl"}:
+    raise ImproperlyConfigured("GEOSERVER_SECURITY_BACKEND must be 'geofence' or 'acl'")
+
+GEOSERVER_ACL_URL = os.getenv("GEOSERVER_ACL_URL", "http://acl:8080/acl/")
+GEOSERVER_ACL_USER = os.getenv("GEOSERVER_ACL_USER", GEOSERVER_ADMIN_USER)
+GEOSERVER_ACL_PASSWORD = os.getenv("GEOSERVER_ACL_PASSWORD", GEOSERVER_ADMIN_PASSWORD)
+_acl_enabled = os.getenv("GEOSERVER_ACL_ENABLED", "").strip()
+GEOSERVER_ACL_ENABLED = (
+    GEOSERVER_SECURITY_BACKEND == "acl"
+    and (False if TEST and not INTEGRATION else ast.literal_eval(_acl_enabled or "True"))
 )
+GEOFENCE_SECURITY_ENABLED = (
+    GEOSERVER_SECURITY_BACKEND == "geofence"
+    and (False if TEST and not INTEGRATION else ast.literal_eval(os.getenv("GEOFENCE_SECURITY_ENABLED", "True")))
+)
+GEOSERVER_SECURITY_ENABLED = GEOFENCE_SECURITY_ENABLED or GEOSERVER_ACL_ENABLED
 
 # OGC (WMS/WFS/WCS) Server Settings
 # OGC (WMS/WFS/WCS) Server Settings
@@ -1034,6 +1070,7 @@ OGC_SERVER = {
         "PRINT_NG_ENABLED": ast.literal_eval(os.getenv("PRINT_NG_ENABLED", "True")),
         "GEONODE_SECURITY_ENABLED": ast.literal_eval(os.getenv("GEONODE_SECURITY_ENABLED", "True")),
         "GEOFENCE_SECURITY_ENABLED": GEOFENCE_SECURITY_ENABLED,
+        "ACL_SECURITY_ENABLED": GEOSERVER_ACL_ENABLED,
         "GEOFENCE_URL": os.getenv("GEOFENCE_URL", "internal:/"),
         "GEOFENCE_TIMEOUT": int(os.getenv("GEOFENCE_TIMEOUT", os.getenv("OGC_REQUEST_TIMEOUT", "60"))),
         "WMST_ENABLED": ast.literal_eval(os.getenv("WMST_ENABLED", "False")),

@@ -23,6 +23,7 @@ import tempfile
 
 
 from django.conf import settings
+from django.db import transaction
 from django.db.models.query import QuerySet
 from django.contrib.auth.models import Group
 from django.contrib.auth import get_user_model
@@ -45,7 +46,14 @@ from geonode.resource.manager import BaseResourceManager, ResourceManagerInterfa
 from geonode.resource.utils import is_remote_resource
 from geonode.geoserver.signals import geofence_rule_assign
 from .geofence import AutoPriorityBatch
-from .tasks import geoserver_set_style, geoserver_delete_map, geoserver_create_style, geoserver_cascading_delete
+from .tasks import (
+    geoserver_set_style,
+    geoserver_delete_map,
+    geoserver_create_style,
+    geoserver_cascading_delete,
+    synch_guardian,
+    geoserver_delete_security_rules,
+)
 from .helpers import (
     gs_catalog,
     set_time_info,
@@ -142,16 +150,37 @@ class GeoServerResourceManager(ResourceManagerInterface):
 
         try:
             if instance and isinstance(instance.get_real_instance(), Dataset):
-                if settings.OGC_SERVER["default"]["GEOFENCE_SECURITY_ENABLED"]:
+                if settings.GEOSERVER_SECURITY_ENABLED:
                     if not getattr(settings, "DELAYED_SECURITY_SIGNALS", False):
                         workspace = get_dataset_workspace(instance)
                         removed = gf_utils.delete_layer_rules(workspace, instance.name)
                         if removed:
                             invalidate_geofence_cache()
+                        else:
+                            transaction.on_commit(
+                                lambda: geoserver_delete_security_rules.apply_async(
+                                    args=(workspace, instance.name), countdown=5
+                                )
+                            )
                     else:
-                        instance.set_dirty_state()
+                        workspace = get_dataset_workspace(instance)
+                        transaction.on_commit(
+                            lambda: geoserver_delete_security_rules.apply_async(
+                                args=(workspace, instance.name), countdown=5
+                            )
+                        )
         except Exception as e:
             logger.exception(e)
+            if instance and isinstance(instance.get_real_instance(), Dataset):
+                try:
+                    workspace = get_dataset_workspace(instance)
+                    transaction.on_commit(
+                        lambda: geoserver_delete_security_rules.apply_async(
+                            args=(workspace, instance.name), countdown=5
+                        )
+                    )
+                except Exception:
+                    logger.exception("Could not enqueue security rule cleanup for deleted dataset")
             return False
         return True
 
@@ -173,9 +202,7 @@ class GeoServerResourceManager(ResourceManagerInterface):
                 _resource = _resource.get_real_instance()
                 logger.info(f'Requesting GeoFence rules on resource "{_resource}" :: {type(_resource).__name__}')
                 if isinstance(_resource, Dataset):
-                    if settings.OGC_SERVER["default"].get("GEOFENCE_SECURITY_ENABLED", False) or getattr(
-                        settings, "GEOFENCE_SECURITY_ENABLED", False
-                    ):
+                    if settings.GEOSERVER_SECURITY_ENABLED:
                         if not getattr(settings, "DELAYED_SECURITY_SIGNALS", False):
                             batch = AutoPriorityBatch(
                                 gf_utils.get_first_available_priority(), f"Set permission for resource {_resource}"
@@ -279,15 +306,23 @@ class GeoServerResourceManager(ResourceManagerInterface):
                                 executed = geofence.run_batch(batch)
                                 if executed:
                                     geofence.invalidate_cache()
+                                elif batch.length():
+                                    _resource.set_dirty_state()
+                                    transaction.on_commit(lambda: synch_guardian.apply_async(countdown=5))
                             except Exception as e:
                                 logger.warning(
                                     f"Could not sync GeoFence for resource {_resource}: {e}." " Retrying async."
                                 )
                                 _resource.set_dirty_state()
+                                transaction.on_commit(lambda: synch_guardian.apply_async(countdown=5))
                         else:
                             _resource.set_dirty_state()
+                            transaction.on_commit(lambda: synch_guardian.apply_async(countdown=5))
         except Exception as e:
             logger.exception(e)
+            if _resource and isinstance(_resource.get_real_instance(), Dataset):
+                _resource.set_dirty_state()
+                transaction.on_commit(lambda: synch_guardian.apply_async(countdown=5))
             return False
 
         geofence_rule_assign.send_robust(sender=instance, instance=instance)

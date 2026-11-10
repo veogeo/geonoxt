@@ -87,6 +87,7 @@ class UserAndTokenInfoApiTests(GeoNodeBaseTestSupport):
         response = self.client.get(userinfo_url)
         self.assertEqual(response.status_code, 401)
 
+    @override_settings(GEOSERVER_CLOUD_ENABLED=False)
     def test_tokeninfo_response(self):
         tokeninfo_url = reverse("tokeninfo")
         _user = get_user_model().objects.get(username="bobby")
@@ -96,6 +97,38 @@ class UserAndTokenInfoApiTests(GeoNodeBaseTestSupport):
         response_json = response.json()
         self.assertEqual(response_json["access_token"], token.token)
         self.assertEqual(response_json["user_id"], _user.pk)
+
+    @override_settings(GEOSERVER_CLOUD_ENABLED=True, GEOSERVER_CLOUD_INTROSPECTION_API_KEY="test-introspection-key")
+    def test_cloud_tokeninfo_requires_shared_secret(self):
+        tokeninfo_url = reverse("tokeninfo")
+        user = get_user_model().objects.get(username="bobby")
+        token = get_or_create_token(user)
+
+        response = self.client.post(tokeninfo_url, data={"token": token})
+
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(response.json()["active"])
+
+    @override_settings(GEOSERVER_CLOUD_ENABLED=True, GEOSERVER_CLOUD_INTROSPECTION_API_KEY="test-introspection-key")
+    def test_cloud_tokeninfo_returns_roles_without_echoing_access_token(self):
+        tokeninfo_url = reverse("tokeninfo")
+        user = get_user_model().objects.get(username="bobby")
+        group, _ = Group.objects.get_or_create(name="private_readers")
+        user.groups.add(group)
+        token = get_or_create_token(user)
+
+        response = self.client.post(
+            tokeninfo_url,
+            data={"token": token},
+            HTTP_X_GEONODE_INTROSPECTION_KEY="test-introspection-key",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["active"])
+        self.assertEqual(response.json()["preferred_username"], user.username)
+        self.assertIn("ROLE_PRIVATE_READERS", response.json()["roles"])
+        self.assertNotIn("access_token", response.json())
+        self.assertNotIn("Authorization", response)
 
 
 class PermissionsApiTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):

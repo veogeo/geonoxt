@@ -31,7 +31,7 @@ from geonode.base import enumerations
 from geonode.layers.models import Dataset
 from geonode.base.models import ResourceBase
 
-from .security import sync_resources_with_guardian
+from .security import invalidate_geofence_cache, sync_resources_with_guardian
 from .helpers import (
     gs_slurp,
     gs_catalog,
@@ -41,6 +41,8 @@ from .helpers import (
     cascading_delete,
     create_gs_thumbnail,
     sync_instance_with_geoserver,
+    geofence,
+    gf_utils,
 )
 
 logger = get_task_logger(__name__)
@@ -366,9 +368,35 @@ def geoserver_delete_map(self, object_id):
     retry_backoff_max=30,
     retry_jitter=False,
 )
-def synch_guardian():
+def synch_guardian(self):
     """
-    Sync resources with Guardian and clear their dirty state
+    Sync pending resource permissions with GeoServer GeoFence or Cloud ACL.
     """
-    if getattr(settings, "DELAYED_SECURITY_SIGNALS", False):
-        sync_resources_with_guardian()
+    if not sync_resources_with_guardian():
+        raise RuntimeError("One or more GeoServer security rules are still pending synchronization")
+
+
+@shared_task(
+    bind=True,
+    name="geonode.geoserver.tasks.geoserver_delete_security_rules",
+    queue="security",
+    expires=30,
+    time_limit=600,
+    acks_late=False,
+    autoretry_for=(Exception,),
+    retry_kwargs={"max_retries": 5},
+    retry_backoff=3,
+    retry_backoff_max=30,
+    retry_jitter=False,
+)
+def geoserver_delete_security_rules(self, workspace, layer):
+    """Remove ACL/GeoFence rules for a deleted resource after its DB row is gone."""
+    batch = gf_utils.collect_delete_layer_rules(workspace, layer)
+    if batch is None:
+        raise RuntimeError(f"Could not collect security rules for deleted layer {workspace}:{layer}")
+    if batch.length() == 0:
+        return True
+    if not geofence.run_batch(batch):
+        raise RuntimeError(f"Could not delete security rules for deleted layer {workspace}:{layer}")
+    invalidate_geofence_cache()
+    return True

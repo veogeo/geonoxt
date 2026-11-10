@@ -436,6 +436,11 @@ class GeoFenceUtils:
             logger.error(f"Error collecting rules for {workspace_name}:{layer_name}", exc_info=e)
             tb = traceback.format_exc()
             logger.debug(tb)
+            # Returning None makes callers treat a failed lookup as an empty
+            # rule set, which can leave stale ACL rules in place while marking
+            # the resource synchronized. Propagate the failure so the caller
+            # keeps/reinstates the dirty state and retries.
+            raise
 
     def delete_layer_rules(self, workspace_name: str, layer_name: str) -> bool:
         """Delete all Rules related to a specific Layer"""

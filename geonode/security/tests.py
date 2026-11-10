@@ -2280,6 +2280,40 @@ class SecurityRulesTests(TestCase):
         mock_create_geofence_rules.assert_not_called()
         self.assertFalse(Dataset.objects.get(pk=remote_dataset.id).dirty_state)
 
+    @patch("geonode.geoserver.security.permissions_registry.get_perms", return_value={})
+    @patch("geonode.geoserver.security.gf_utils.get_first_available_priority", return_value=1)
+    @patch("geonode.geoserver.security.gf_utils.collect_delete_layer_rules")
+    @patch("geonode.geoserver.security.geofence.run_batch", return_value=False)
+    def test_sync_resources_keeps_dirty_state_when_acl_batch_is_not_committed(
+        self, mock_run_batch, mock_collect_rules, mock_priority, mock_permissions
+    ):
+        def collect_stale_rule(workspace, layer, batch):
+            batch.add_delete_rule("stale-rule")
+            return batch
+
+        mock_collect_rules.side_effect = collect_stale_rule
+        self._l.set_dirty_state()
+
+        with self.assertRaisesRegex(RuntimeError, "Security rules failed to synchronize"):
+            sync_resources_with_guardian(resource=self._l, force=True)
+
+        self.assertTrue(Dataset.objects.get(pk=self._l.id).dirty_state)
+        mock_run_batch.assert_called_once()
+
+    @patch("geonode.geoserver.security.permissions_registry.get_perms", return_value={})
+    @patch("geonode.geoserver.security.gf_utils.get_first_available_priority", return_value=1)
+    @patch("geonode.geoserver.security.gf_utils.collect_delete_layer_rules")
+    def test_sync_resources_keeps_dirty_state_when_acl_rule_lookup_fails(
+        self, mock_collect_rules, mock_priority, mock_permissions
+    ):
+        mock_collect_rules.side_effect = RuntimeError("ACL unavailable")
+        self._l.set_dirty_state()
+
+        with self.assertRaisesRegex(RuntimeError, "Security rules failed to synchronize"):
+            sync_resources_with_guardian(resource=self._l, force=True)
+
+        self.assertTrue(Dataset.objects.get(pk=self._l.id).dirty_state)
+
     # TODO: DELAYED SECURITY MUST BE REVISED
     def test_sync_resources_with_guardian_delay_true(self):
         with self.settings(DELAYED_SECURITY_SIGNALS=True, GEOFENCE_SECURITY_ENABLED=True):
