@@ -59,9 +59,9 @@ def sync_geonode_datasets(
             logger.info(f"=== Syncing layer {count}/{layers_count}: {layer.name}")
             if updatepermissions:
                 logger.info("Syncing permissions...")
-                # sync permissions in GeoFence
+                # sync permissions in GeoServer ACL
                 perm_spec = json.loads(_perms_info_json(layer))
-                # re-sync GeoFence security rules
+                # re-sync GeoServer ACL security rules
                 layer.set_permissions(perm_spec)
             if updateattributes:
                 # recalculate the layer statistics
@@ -98,7 +98,7 @@ def sync_geonode_datasets(
 
 
 class Command(BaseCommand):
-    help = "Update the GeoNode layers: permissions (including GeoFence database), statistics, thumbnails"
+    help = "Update the GeoNode layers: permissions (including GeoServer ACL rules), statistics, thumbnails"
 
     def add_arguments(self, parser):
         parser.add_argument(

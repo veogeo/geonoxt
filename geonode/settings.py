@@ -292,7 +292,7 @@ THUMBNAIL_LOCATION = "thumbs"
 
 # Absolute path to the directory that holds media.
 # Example: "/home/media/media.lawrence.com/"
-MEDIA_ROOT = os.getenv("MEDIA_ROOT", os.path.join(PROJECT_ROOT, MEDIAFILES_LOCATION))
+MEDIA_ROOT = os.getenv("NOXT_MEDIA_ROOT", os.getenv("MEDIA_ROOT", os.path.join(PROJECT_ROOT, MEDIAFILES_LOCATION)))
 
 # URL that handles the media served from MEDIA_ROOT. Make sure to use a
 # trailing slash if there is a path component (optional in other cases).
@@ -664,7 +664,10 @@ TEST_RUNNER_PARALLEL = os.environ.get("TEST_RUNNER_PARALLEL", 1)
 # TEST_RUNNER_WORKER_TIMEOUT = 10
 
 TEST = "test" in sys.argv
-INTEGRATION = "geonode.tests.integration" in sys.argv
+NOXT_GEOSERVER_INTEGRATION_TESTS = ast.literal_eval(
+    os.environ.get("NOXT_GEOSERVER_INTEGRATION_TESTS", "False")
+)
+INTEGRATION = "geonode.tests.integration" in sys.argv or NOXT_GEOSERVER_INTEGRATION_TESTS
 
 #
 # Customizations to built in Django settings required by GeoNode
@@ -772,8 +775,10 @@ if SESSION_EXPIRED_CONTROL_ENABLED:
 # It must be placed after the SessionMiddleware
 MIDDLEWARE += ("geonode.security.middleware.AuthenticateBasicAuthOrApiKeyMiddleware",)
 
-SESSION_COOKIE_SECURE = ast.literal_eval(os.environ.get("SESSION_COOKIE_SECURE", "True"))
-CSRF_COOKIE_SECURE = ast.literal_eval(os.environ.get("CSRF_COOKIE_SECURE", "True"))
+_cloud_cookie_default = ast.literal_eval(os.environ.get("NOXT_GEOSERVER_CLOUD_ENABLED", "False"))
+_secure_cookie_default = str(SITEURL).lower().startswith("https://") if _cloud_cookie_default else True
+SESSION_COOKIE_SECURE = ast.literal_eval(os.environ.get("SESSION_COOKIE_SECURE", str(_secure_cookie_default)))
+CSRF_COOKIE_SECURE = ast.literal_eval(os.environ.get("CSRF_COOKIE_SECURE", str(_secure_cookie_default)))
 CSRF_COOKIE_HTTPONLY = ast.literal_eval(os.environ.get("CSRF_COOKIE_HTTPONLY", "False"))
 CORS_ALLOW_ALL_ORIGINS = ast.literal_eval(os.environ.get("CORS_ALLOW_ALL_ORIGINS", "False"))
 X_FRAME_OPTIONS = os.environ.get("X_FRAME_OPTIONS", "DENY")
@@ -816,8 +821,51 @@ AUTHENTICATION_BACKENDS = (
 if "announcements" in INSTALLED_APPS:
     AUTHENTICATION_BACKENDS += ("announcements.auth_backends.AnnouncementPermissionsBackend",)
 
-GEOSERVER_CLOUD_ENABLED = ast.literal_eval(os.getenv("GEOSERVER_CLOUD_ENABLED", "False"))
-GEOSERVER_CLOUD_INTROSPECTION_API_KEY = os.getenv("GEOSERVER_CLOUD_INTROSPECTION_API_KEY", "")
+NOXT_GEOSERVER_CLOUD_ENABLED = ast.literal_eval(os.getenv("NOXT_GEOSERVER_CLOUD_ENABLED", "False"))
+NOXT_GEOSERVER_CLOUD_WFS_URL = os.getenv(
+    "NOXT_GEOSERVER_CLOUD_WFS_URL", "http://gateway:8080/geoserver/cloud/wfs"
+)
+NOXT_GEOSERVER_CLOUD_AUDIENCE = os.getenv("NOXT_GEOSERVER_CLOUD_AUDIENCE", "geoserver-cloud")
+NOXT_GEOSERVER_CLOUD_USERNAME_CLAIM = os.getenv(
+    "NOXT_GEOSERVER_CLOUD_USERNAME_CLAIM", "preferred_username"
+).strip()
+NOXT_GEOSERVER_CLOUD_USER_FIELD = os.getenv("NOXT_GEOSERVER_CLOUD_USER_FIELD", "username").strip()
+_default_geonode_oidc_issuer = os.getenv("NOXT_OIDC_ISS_ENDPOINT", f"{SITEURL.rstrip('/')}/o/")
+NOXT_GEOSERVER_CLOUD_ISSUER_URI = os.getenv(
+    "NOXT_GEOSERVER_CLOUD_ISSUER_URI", _default_geonode_oidc_issuer
+)
+_active_issuer_is_geonode = (
+    NOXT_GEOSERVER_CLOUD_ISSUER_URI.rstrip("/") == _default_geonode_oidc_issuer.rstrip("/")
+)
+NOXT_GEOSERVER_CLOUD_DISCOVERY_URI = os.getenv(
+    "NOXT_GEOSERVER_CLOUD_DISCOVERY_URI",
+    "http://django:8000/o/.well-known/openid-configuration/"
+    if _active_issuer_is_geonode
+    else f"{NOXT_GEOSERVER_CLOUD_ISSUER_URI.rstrip('/')}/.well-known/openid-configuration/",
+)
+NOXT_GEOSERVER_CLOUD_JWK_SET_URI = os.getenv(
+    "NOXT_GEOSERVER_CLOUD_JWK_SET_URI",
+    "http://django:8000/o/.well-known/jwks.json" if _active_issuer_is_geonode else "",
+)
+NOXT_MAPSTORE_OIDC_CLIENT_ID = os.getenv("NOXT_MAPSTORE_OIDC_CLIENT_ID", "noxt-mapstore-client").strip()
+NOXT_MAPSTORE_OIDC_DISCOVERY_URI = os.getenv(
+    "NOXT_MAPSTORE_OIDC_DISCOVERY_URI",
+    f"{NOXT_GEOSERVER_CLOUD_ISSUER_URI.rstrip('/')}/.well-known/openid-configuration/",
+)
+NOXT_MAPSTORE_OIDC_REDIRECT_URI = os.getenv(
+    "NOXT_MAPSTORE_OIDC_REDIRECT_URI",
+    f"{SITEURL.rstrip('/')}/catalogue/",
+)
+NOXT_MAPSTORE_OIDC_RESOURCE = os.getenv("NOXT_MAPSTORE_OIDC_RESOURCE", "").strip()
+NOXT_MAPSTORE_OIDC_SCOPES = os.getenv("NOXT_MAPSTORE_OIDC_SCOPES", "openid groups offline_access").strip()
+
+if NOXT_GEOSERVER_CLOUD_ENABLED:
+    REST_FRAMEWORK["DEFAULT_AUTHENTICATION_CLASSES"] = [
+        "geonode.base.oauth.GeoNodeCloudJWTAuthentication",
+        "rest_framework.authentication.BasicAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
+    ]
+    AUTHENTICATION_BACKENDS += ("geonode.base.oauth.GeoNodeCloudJWTBackend",)
 
 OAUTH2_PROVIDER = {
     "SCOPES": {
@@ -825,22 +873,34 @@ OAUTH2_PROVIDER = {
         "read": "Read scope",
         "write": "Write scope",
         "groups": "Access to your groups",
+        "offline_access": "Continue access while the user is active",
     },
     "CLIENT_ID_GENERATOR_CLASS": "oauth2_provider.generators.ClientIdGenerator",
+    "ACCESS_TOKEN_GENERATOR": (
+        "geonode.base.oauth.geonode_cloud_access_token_generator" if NOXT_GEOSERVER_CLOUD_ENABLED else None
+    ),
+    "REFRESH_TOKEN_GENERATOR": (
+        "oauthlib.oauth2.rfc6749.tokens.random_token_generator" if NOXT_GEOSERVER_CLOUD_ENABLED else None
+    ),
+    "ROTATE_REFRESH_TOKEN": True,
+    "REFRESH_TOKEN_EXPIRE_SECONDS": (
+        int(os.getenv("REFRESH_TOKEN_EXPIRE_SECONDS", "2592000")) if NOXT_GEOSERVER_CLOUD_ENABLED else None
+    ),
+    "PKCE_REQUIRED": True,
     # OpenID Connect
     "OIDC_ENABLED": True,
     "OIDC_ISS_ENDPOINT": os.getenv(
-        "OIDC_ISS_ENDPOINT", f"{SITEURL.rstrip('/')}/o/" if GEOSERVER_CLOUD_ENABLED else SITEURL
+        "NOXT_OIDC_ISS_ENDPOINT", f"{SITEURL.rstrip('/')}/o/" if NOXT_GEOSERVER_CLOUD_ENABLED else SITEURL
     ),
     "OIDC_USERINFO_ENDPOINT": os.getenv(
-        "OIDC_USERINFO_ENDPOINT",
-        f"{SITEURL.rstrip('/')}/api/v2/userinfo/" if GEOSERVER_CLOUD_ENABLED else f"{SITEURL}api/o/v4/tokeninfo/",
+        "NOXT_OIDC_USERINFO_ENDPOINT",
+        f"{SITEURL.rstrip('/')}/api/v2/userinfo/" if NOXT_GEOSERVER_CLOUD_ENABLED else f"{SITEURL}api/o/v4/tokeninfo/",
     ),
     "OIDC_RSA_PRIVATE_KEY": (
-        Path(os.environ["OIDC_RSA_PRIVATE_KEY_FILE"]).read_text()
-        if os.getenv("OIDC_RSA_PRIVATE_KEY_FILE")
-        else os.getenv("OIDC_RSA_PRIVATE_KEY")
-        or ("" if GEOSERVER_CLOUD_ENABLED else """-----BEGIN RSA PRIVATE KEY-----
+        Path(os.environ["NOXT_GEONODE_OIDC_PRIVATE_KEY_FILE"]).read_text()
+        if os.getenv("NOXT_GEONODE_OIDC_PRIVATE_KEY_FILE")
+        else os.getenv("NOXT_GEONODE_OIDC_PRIVATE_KEY")
+        or ("" if NOXT_GEOSERVER_CLOUD_ENABLED else """-----BEGIN RSA PRIVATE KEY-----
 MIICXQIBAAKBgQCIThjbTwpYu4Lwqp8oA7PqD6Ij/GwpLFJuPbWVaeCDaX6T7mh8
 mJMIEgl/VIZasLH8SwU5mZ4sPeiqk7NgJq1XDo97q5mlFoNVHMCH38KQzSIBWtbq
 WnEEnQdiqBbCmmIebLd4OcfpbIVUI89cnCq7U0M1ie0KOopWSHWOP6/35QIDAQAB
@@ -857,9 +917,13 @@ g+gp5fQ4nmDrSNHjakzQCX2mKMsx/GLWZzoIDd7ECV9f
 -----END RSA PRIVATE KEY-----""")
     ),
 }
-if GEOSERVER_CLOUD_ENABLED and not OAUTH2_PROVIDER["OIDC_RSA_PRIVATE_KEY"]:
+if NOXT_GEOSERVER_CLOUD_ENABLED:
+    OAUTH2_PROVIDER["OAUTH2_VALIDATOR_CLASS"] = "geonode.base.oauth.GeoNodeCloudOAuth2Validator"
+
+if NOXT_GEOSERVER_CLOUD_ENABLED and not OAUTH2_PROVIDER["OIDC_RSA_PRIVATE_KEY"]:
     raise ImproperlyConfigured(
-        "GEOSERVER_CLOUD_ENABLED requires OIDC_RSA_PRIVATE_KEY or OIDC_RSA_PRIVATE_KEY_FILE"
+        "NOXT_GEOSERVER_CLOUD_ENABLED requires NOXT_GEONODE_OIDC_PRIVATE_KEY or "
+        "NOXT_GEONODE_OIDC_PRIVATE_KEY_FILE"
     )
 
 OAUTH2_PROVIDER_APPLICATION_MODEL = "oauth2_provider.Application"
@@ -877,7 +941,9 @@ OAUTH2_DEFAULT_BACKEND_CLIENT_NAME = os.environ.get("OAUTH2_DEFAULT_BACKEND_CLIE
 OAUTH2_API_KEY = os.environ.get("OAUTH2_API_KEY", None)
 
 # 1 day expiration time by default
-ACCESS_TOKEN_EXPIRE_SECONDS = int(os.getenv("ACCESS_TOKEN_EXPIRE_SECONDS", "86400"))
+ACCESS_TOKEN_EXPIRE_SECONDS = int(
+    os.getenv("ACCESS_TOKEN_EXPIRE_SECONDS", "600" if NOXT_GEOSERVER_CLOUD_ENABLED else "86400")
+)
 
 ANONYMOUS_USER_ID = os.getenv("ANONYMOUS_USER_ID", "-1")
 GUARDIAN_GET_INIT_ANONYMOUS_USER = os.getenv(
@@ -939,7 +1005,7 @@ if LOCKDOWN_GEONODE:
 # A tuple of hosts the proxy can send requests to.
 try:
     # try to parse python notation, default in dockerized env
-    PROXY_ALLOWED_HOSTS = ast.literal_eval(os.getenv("PROXY_ALLOWED_HOSTS"))
+    PROXY_ALLOWED_HOSTS = ast.literal_eval(os.getenv("NOXT_PROXY_ALLOWED_HOSTS", os.getenv("PROXY_ALLOWED_HOSTS")))
 except (ValueError, SyntaxError):
     # fallback to regular list of values separated with misc chars
     PROXY_ALLOWED_HOSTS = (
@@ -1031,25 +1097,14 @@ GEOSERVER_ADMIN_PASSWORD = os.getenv("GEOSERVER_ADMIN_PASSWORD", "geoserver")
 # This is the password from Geoserver factory data-dir. It's only used at install time to perform the very first configurfation of GEOSERVER_ADMIN_PASSWORD
 GEOSERVER_FACTORY_PASSWORD = os.getenv("GEOSERVER_FACTORY_PASSWORD", "geoserver")
 
-GEOSERVER_SECURITY_BACKEND = os.getenv("GEOSERVER_SECURITY_BACKEND", "").strip().lower()
-if not GEOSERVER_SECURITY_BACKEND:
-    GEOSERVER_SECURITY_BACKEND = "acl" if GEOSERVER_CLOUD_ENABLED else "geofence"
-if GEOSERVER_SECURITY_BACKEND not in {"geofence", "acl"}:
-    raise ImproperlyConfigured("GEOSERVER_SECURITY_BACKEND must be 'geofence' or 'acl'")
-
-GEOSERVER_ACL_URL = os.getenv("GEOSERVER_ACL_URL", "http://acl:8080/acl/")
-GEOSERVER_ACL_USER = os.getenv("GEOSERVER_ACL_USER", GEOSERVER_ADMIN_USER)
-GEOSERVER_ACL_PASSWORD = os.getenv("GEOSERVER_ACL_PASSWORD", GEOSERVER_ADMIN_PASSWORD)
-_acl_enabled = os.getenv("GEOSERVER_ACL_ENABLED", "").strip()
-GEOSERVER_ACL_ENABLED = (
-    GEOSERVER_SECURITY_BACKEND == "acl"
-    and (False if TEST and not INTEGRATION else ast.literal_eval(_acl_enabled or "True"))
+NOXT_GEOSERVER_ACL_URL = os.getenv("NOXT_GEOSERVER_ACL_URL", "http://acl:8080/acl/")
+NOXT_GEOSERVER_ACL_USER = os.getenv("NOXT_GEOSERVER_ACL_USER", GEOSERVER_ADMIN_USER)
+NOXT_GEOSERVER_ACL_PASSWORD = os.getenv("NOXT_GEOSERVER_ACL_PASSWORD", GEOSERVER_ADMIN_PASSWORD)
+noxt_acl_enabled_value = os.getenv("NOXT_GEOSERVER_ACL_ENABLED", "").strip()
+NOXT_GEOSERVER_ACL_ENABLED = (
+    False if TEST and not INTEGRATION else ast.literal_eval(noxt_acl_enabled_value or "True")
 )
-GEOFENCE_SECURITY_ENABLED = (
-    GEOSERVER_SECURITY_BACKEND == "geofence"
-    and (False if TEST and not INTEGRATION else ast.literal_eval(os.getenv("GEOFENCE_SECURITY_ENABLED", "True")))
-)
-GEOSERVER_SECURITY_ENABLED = GEOFENCE_SECURITY_ENABLED or GEOSERVER_ACL_ENABLED
+GEOSERVER_SECURITY_ENABLED = NOXT_GEOSERVER_ACL_ENABLED
 
 # OGC (WMS/WFS/WCS) Server Settings
 # OGC (WMS/WFS/WCS) Server Settings
@@ -1057,7 +1112,12 @@ OGC_SERVER = {
     "default": {
         "BACKEND": os.getenv("BACKEND", "geonode.geoserver"),
         "LOCATION": GEOSERVER_LOCATION,
+        "REST_LOCATION": os.getenv("NOXT_GEOSERVER_CLOUD_REST_URL") if NOXT_GEOSERVER_CLOUD_ENABLED else None,
         "WEB_UI_LOCATION": GEOSERVER_WEB_UI_LOCATION,
+        "WMS_ENDPOINT": os.getenv(
+            "NOXT_GEOSERVER_CLOUD_WMS_ENDPOINT" if NOXT_GEOSERVER_CLOUD_ENABLED else "WMS_ENDPOINT",
+            "geonode/ows" if NOXT_GEOSERVER_CLOUD_ENABLED else "ows",
+        ),
         "LOGIN_ENDPOINT": "j_spring_oauth2_geonode_login",
         "LOGOUT_ENDPOINT": "j_spring_oauth2_geonode_logout",
         # PUBLIC_LOCATION needs to be kept like this because in dev mode
@@ -1069,10 +1129,7 @@ OGC_SERVER = {
         "MAPFISH_PRINT_ENABLED": ast.literal_eval(os.getenv("MAPFISH_PRINT_ENABLED", "True")),
         "PRINT_NG_ENABLED": ast.literal_eval(os.getenv("PRINT_NG_ENABLED", "True")),
         "GEONODE_SECURITY_ENABLED": ast.literal_eval(os.getenv("GEONODE_SECURITY_ENABLED", "True")),
-        "GEOFENCE_SECURITY_ENABLED": GEOFENCE_SECURITY_ENABLED,
-        "ACL_SECURITY_ENABLED": GEOSERVER_ACL_ENABLED,
-        "GEOFENCE_URL": os.getenv("GEOFENCE_URL", "internal:/"),
-        "GEOFENCE_TIMEOUT": int(os.getenv("GEOFENCE_TIMEOUT", os.getenv("OGC_REQUEST_TIMEOUT", "60"))),
+        "ACL_SECURITY_ENABLED": NOXT_GEOSERVER_ACL_ENABLED,
         "WMST_ENABLED": ast.literal_eval(os.getenv("WMST_ENABLED", "False")),
         "BACKEND_WRITE_ENABLED": ast.literal_eval(os.getenv("BACKEND_WRITE_ENABLED", "True")),
         "WPS_ENABLED": ast.literal_eval(os.getenv("WPS_ENABLED", "False")),
@@ -1801,6 +1858,9 @@ AUTH_HANDLERS = [
 ]
 
 ENABLE_APIKEY_LOGIN = ast.literal_eval(os.getenv("ENABLE_APIKEY_LOGIN", "False"))
+if NOXT_GEOSERVER_CLOUD_ENABLED:
+    # Cloud API clients authenticate with the active OIDC JWT, never an opaque API key.
+    ENABLE_APIKEY_LOGIN = False
 
 # ######################################################## #
 # Advanced Resource Publishing Worklow Settings - START    #
@@ -2332,4 +2392,4 @@ FILE_UPLOAD_PERMISSIONS = 0o777
 XLSX_UPLOAD_ENABLED = ast.literal_eval(os.getenv("XLSX_UPLOAD_ENABLED", "False"))
 
 # Trusted hosts for bypassing the URL validation e.g internal networks. Use the format <domain>:<port>
-SAFE_URL_TRUSTED_HOSTS = ast.literal_eval(os.getenv("SAFE_URL_TRUSTED_HOSTS", "[]"))
+SAFE_URL_TRUSTED_HOSTS = ast.literal_eval(os.getenv("NOXT_SAFE_URL_TRUSTED_HOSTS", os.getenv("SAFE_URL_TRUSTED_HOSTS", "[]")))

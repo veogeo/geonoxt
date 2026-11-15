@@ -192,6 +192,9 @@ def user_is_manager_of_group(profile, group=None) -> bool:
     return False
 
 
+user_deletion_modules = []
+
+
 def check_user_deletion_rules(profile) -> None:
     """
     calls a set of defined rules specific to the deletion of a user
@@ -204,11 +207,10 @@ def check_user_deletion_rules(profile) -> None:
     Returns:
         Tuple : with a boolean result, and the error list
     """
-    if not globals().get("user_deletion_modules"):
-        rule_path = settings.USER_DELETION_RULES if hasattr(settings, "USER_DELETION_RULES") else []
-        globals()["user_deletion_modules"] = [import_string(deletion_rule) for deletion_rule in rule_path]
+    rule_path = getattr(settings, "USER_DELETION_RULES", [])
+    deletion_modules = user_deletion_modules or [import_string(deletion_rule) for deletion_rule in rule_path]
     error_list = []
-    for not_deletable in globals().get("user_deletion_modules", []):
+    for not_deletable in deletion_modules:
         if not_deletable(profile):
             error_list.append(not_deletable.__name__)
     if error_list:

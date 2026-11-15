@@ -44,8 +44,8 @@ from geonode.security.permissions import (
 )
 from geonode.resource.manager import BaseResourceManager, ResourceManagerInterface
 from geonode.resource.utils import is_remote_resource
-from geonode.geoserver.signals import geofence_rule_assign
-from .geofence import AutoPriorityBatch
+from geonode.geoserver.signals import acl_rule_assign
+from .acl_rules import Noxt_ACLAutoPriorityBatch
 from .tasks import (
     geoserver_set_style,
     geoserver_delete_map,
@@ -60,15 +60,15 @@ from .helpers import (
     ogc_server_settings,
     sync_instance_with_geoserver,
     create_gs_thumbnail,
-    geofence,
-    gf_utils,
+    acl_client,
+    acl_rule_manager,
 )
 from .security import (
     _get_gwc_filters_and_formats,
     toggle_dataset_cache,
-    invalidate_geofence_cache,
+    invalidate_acl_cache,
     has_geolimits,
-    create_geofence_rules,
+    create_acl_rules,
 )
 
 logger = logging.getLogger(__name__)
@@ -153,9 +153,9 @@ class GeoServerResourceManager(ResourceManagerInterface):
                 if settings.GEOSERVER_SECURITY_ENABLED:
                     if not getattr(settings, "DELAYED_SECURITY_SIGNALS", False):
                         workspace = get_dataset_workspace(instance)
-                        removed = gf_utils.delete_layer_rules(workspace, instance.name)
+                        removed = acl_rule_manager.delete_layer_rules(workspace, instance.name)
                         if removed:
-                            invalidate_geofence_cache()
+                            invalidate_acl_cache()
                         else:
                             transaction.on_commit(
                                 lambda: geoserver_delete_security_rules.apply_async(
@@ -200,18 +200,18 @@ class GeoServerResourceManager(ResourceManagerInterface):
         try:
             if _resource:
                 _resource = _resource.get_real_instance()
-                logger.info(f'Requesting GeoFence rules on resource "{_resource}" :: {type(_resource).__name__}')
+                logger.info(f'Requesting ACL rules on resource "{_resource}" :: {type(_resource).__name__}')
                 if isinstance(_resource, Dataset):
                     if settings.GEOSERVER_SECURITY_ENABLED:
                         if not getattr(settings, "DELAYED_SECURITY_SIGNALS", False):
-                            batch = AutoPriorityBatch(
-                                gf_utils.get_first_available_priority(), f"Set permission for resource {_resource}"
+                            batch = Noxt_ACLAutoPriorityBatch(
+                                acl_rule_manager.get_first_available_priority(), f"Set permission for resource {_resource}"
                             )
 
                             workspace = get_dataset_workspace(_resource)
 
                             if not created:
-                                gf_utils.collect_delete_layer_rules(workspace, _resource.name, batch)
+                                acl_rule_manager.collect_delete_layer_rules(workspace, _resource.name, batch)
 
                             exist_geolimits = None
                             _owner = owner or _resource.owner
@@ -223,7 +223,7 @@ class GeoServerResourceManager(ResourceManagerInterface):
                                     + DATASET_ADMIN_PERMISSIONS.copy()
                                     + DOWNLOAD_PERMISSIONS.copy()
                                 )
-                                create_geofence_rules(_resource, perms, _owner, None, batch)
+                                create_acl_rules(_resource, perms, _owner, None, batch)
                                 exist_geolimits = exist_geolimits or has_geolimits(_resource, _owner, None)
 
                                 deferred_anon_perms = []
@@ -237,7 +237,7 @@ class GeoServerResourceManager(ResourceManagerInterface):
                                                 _user = None
                                                 deferred_anon_perms.append(user_perms)
                                             else:
-                                                create_geofence_rules(_resource, user_perms, _user, None, batch)
+                                                create_acl_rules(_resource, user_perms, _user, None, batch)
                                             exist_geolimits = exist_geolimits or has_geolimits(_resource, _user, None)
 
                                 # All the other groups
@@ -248,11 +248,11 @@ class GeoServerResourceManager(ResourceManagerInterface):
                                             _group = None
                                             deferred_anon_perms.append(perms)
                                         else:
-                                            create_geofence_rules(_resource, perms, None, _group, batch)
+                                            create_acl_rules(_resource, perms, None, _group, batch)
                                         exist_geolimits = exist_geolimits or has_geolimits(_resource, None, _group)
 
                                 for perm in deferred_anon_perms:
-                                    create_geofence_rules(_resource, perm, None, None, batch)
+                                    create_acl_rules(_resource, perm, None, None, batch)
 
                             else:
                                 # Owner & Managers
@@ -261,17 +261,17 @@ class GeoServerResourceManager(ResourceManagerInterface):
                                     + DATASET_ADMIN_PERMISSIONS.copy()
                                     + DOWNLOAD_PERMISSIONS.copy()
                                 )
-                                create_geofence_rules(_resource, perms, _owner, None, batch)
+                                create_acl_rules(_resource, perms, _owner, None, batch)
                                 exist_geolimits = exist_geolimits or has_geolimits(_resource, _owner, None)
 
                                 _resource_groups, _group_managers = _resource.get_group_managers(group=_resource.group)
                                 for _group_manager in _group_managers:
-                                    create_geofence_rules(_resource, perms, _group_manager, None, batch)
+                                    create_acl_rules(_resource, perms, _group_manager, None, batch)
                                     exist_geolimits = exist_geolimits or has_geolimits(_resource, _group_manager, None)
 
                                 for user_group in _resource_groups:
                                     if not skip_registered_members_common_group(user_group):
-                                        create_geofence_rules(_resource, perms, None, user_group, batch)
+                                        create_acl_rules(_resource, perms, None, user_group, batch)
                                         exist_geolimits = exist_geolimits or has_geolimits(_resource, None, user_group)
                                 # Anonymous
                                 anonymous_perms = (
@@ -282,11 +282,11 @@ class GeoServerResourceManager(ResourceManagerInterface):
                                 )
 
                                 if VIEW_PERMISSIONS[0] in anonymous_perms:
-                                    create_geofence_rules(_resource, VIEW_PERMISSIONS, None, None, batch)
+                                    create_acl_rules(_resource, VIEW_PERMISSIONS, None, None, batch)
                                     exist_geolimits = exist_geolimits or has_geolimits(_resource, None, None)
 
                                 if DOWNLOAD_PERMISSIONS[0] in anonymous_perms:
-                                    create_geofence_rules(_resource, DOWNLOAD_PERMISSIONS, None, None, batch)
+                                    create_acl_rules(_resource, DOWNLOAD_PERMISSIONS, None, None, batch)
                                     exist_geolimits = exist_geolimits or has_geolimits(_resource, None, None)
 
                             if exist_geolimits is not None:
@@ -301,17 +301,17 @@ class GeoServerResourceManager(ResourceManagerInterface):
 
                             try:
                                 logger.info(
-                                    f"Pushing {batch.length()} " f"changes into GeoFence for resource {_resource.name}"
+                                    f"Pushing {batch.length()} " f"changes into ACL for resource {_resource.name}"
                                 )
-                                executed = geofence.run_batch(batch)
+                                executed = acl_client.run_batch(batch)
                                 if executed:
-                                    geofence.invalidate_cache()
+                                    acl_client.invalidate_cache()
                                 elif batch.length():
                                     _resource.set_dirty_state()
                                     transaction.on_commit(lambda: synch_guardian.apply_async(countdown=5))
                             except Exception as e:
                                 logger.warning(
-                                    f"Could not sync GeoFence for resource {_resource}: {e}." " Retrying async."
+                                    f"Could not sync ACL for resource {_resource}: {e}." " Retrying async."
                                 )
                                 _resource.set_dirty_state()
                                 transaction.on_commit(lambda: synch_guardian.apply_async(countdown=5))
@@ -325,7 +325,7 @@ class GeoServerResourceManager(ResourceManagerInterface):
                 transaction.on_commit(lambda: synch_guardian.apply_async(countdown=5))
             return False
 
-        geofence_rule_assign.send_robust(sender=instance, instance=instance)
+        acl_rule_assign.send_robust(sender=instance, instance=instance)
 
         return True
 

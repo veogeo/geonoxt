@@ -37,7 +37,7 @@ To save the new share settings, click on `Resource` tab (from the navigation bar
 ### Geo Limits permissions
 
 !!! Note 
-    This feature is available **only** when enabling ```GeoServer``` as geospatial backend. Also make sure that the properties ```GEONODE_SECURITY_ENABLED```, ```GEOFENCE_SECURITY_ENABLED``` and ```GEOFENCE_URL``` are correctly set for the ```OGC_SERVER```.
+    For this Cloud branch, Geo Limits are enforced through GeoServer Cloud ACL. Configure ACL as described in the [GeoNode + GeoServer Cloud guide](../setup/docker/geoserver-cloud.md).
 
 `Geo Limits` are an extension of the GeoNode standard permissions. `Geo Limits` allows the owner of the resource, or the administrator, to restrict users or groups to a specific geographical area, in order to limit the access to the dataset to only the portions contained within that geographic restriction, excluding data outside of it.
 

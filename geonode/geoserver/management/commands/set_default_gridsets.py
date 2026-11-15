@@ -20,6 +20,7 @@
 
 from geonode.layers.models import Dataset
 from django.core.management.base import BaseCommand
+from geonode.geoserver.gwc import noxt_get_default_gridsets
 from requests.auth import HTTPBasicAuth
 from defusedxml import lxml as dlxml
 import xml.etree.ElementTree as ET
@@ -61,12 +62,15 @@ class Command(BaseCommand):
                     tree.remove(gwc_id)
 
                     gwc_gridSubsets = tree.find('gridSubsets')
-                    if len(gwc_gridSubsets) == 6:
+                    current_gridsets = [
+                        grid_subset.findtext('gridSetName') for grid_subset in gwc_gridSubsets
+                    ]
+                    if current_gridsets == list(noxt_get_default_gridsets()):
                         continue
 
                     tree.remove(gwc_gridSubsets)
                     gwc_gridSubsets = etree.Element('gridSubsets')
-                    for gridSubset in ('EPSG:3857', 'EPSG:3857x2', 'EPSG:4326', 'EPSG:4326x2', 'EPSG:900913', 'EPSG:900913x2'):
+                    for gridSubset in noxt_get_default_gridsets():
                         gwc_gridSubset = etree.Element('gridSubset')
                         gwc_gridSetName = etree.Element('gridSetName')
                         gwc_gridSetName.text = gridSubset

@@ -155,8 +155,8 @@ class ExecutionRequestApi(GeoNodeBaseTestSupport):
         self.assertEqual(500, response.status_code)
         self.assertDictEqual(expected, response.json())
 
-    def test_endpoint_should_return_the_source(self):
-        # creating dummy execution request
+    def test_endpoint_should_return_upload_request_metadata(self):
+        # The `source` field was removed from ExecutionRequest in migration 0009.
         obj = ExecutionRequest.objects.create(user=self.superuser, func_name="import_new_resource", action="upload")
         self.client.force_login(self.superuser)
 
@@ -167,9 +167,8 @@ class ExecutionRequestApi(GeoNodeBaseTestSupport):
         self.assertIsNotNone(response.json())
         payload = response.json()
 
-        source = payload.get("request", {}).get("source", None)
-        self.assertIsNotNone(source)
-        self.assertEqual("upload_workflow", source)
+        self.assertEqual("import_new_resource", payload["request"]["func_name"])
+        self.assertEqual("upload", payload["request"]["action"])
 
         # cleanup
         obj.delete()

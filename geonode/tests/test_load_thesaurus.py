@@ -29,7 +29,7 @@ from rdflib import Graph, Literal
 from rdflib.exceptions import ParserError
 from rdflib.namespace import DC, RDF, SKOS
 
-from geonode.base.management.commands.load_thesaurus import value_for_language
+from geonode.base.management.commands.thesaurus_subcommands.load import value_for_language
 from geonode.base.models import Thesaurus, ThesaurusKeyword, ThesaurusKeywordLabel, ThesaurusLabel
 
 
@@ -37,9 +37,10 @@ class TestLoadThesaurus(TestCase):
     @classmethod
     def setUpTestData(cls):
         management.call_command(
-            "load_thesaurus",
+            "thesaurus",
+            "load",
             file=f"{os.path.dirname(os.path.abspath(__file__))}/data/thesaurus.rdf",
-            name="foo_name",
+            identifier="foo_name",
             stdout="out",
         )
 
@@ -56,7 +57,7 @@ class TestLoadThesaurus(TestCase):
 
     def test_given_invalid_filename_will_raise_an_oserror(self):
         with self.assertRaises(OSError):
-            management.call_command("load_thesaurus", file="abc", name="foo_name", stdout="out")
+            management.call_command("thesaurus", "load", file="abc", identifier="foo_name", stdout="out")
 
     def test_expected_Thesaurus(self):
         actual = self.__get_last_thesaurus()
@@ -86,7 +87,7 @@ class TestLoadThesaurus(TestCase):
     def test_load_from_UploadedFile(self):
         with open(self.rdf_path) as f:
             uf = UploadedFile(f, name=self.rdf_path)
-            management.call_command("load_thesaurus", file=uf, name="alt_name", stdout="out")
+            management.call_command("thesaurus", "load", file=uf, identifier="alt_name", stdout="out")
             alt = Thesaurus.objects.get(identifier="alt_name")
             keywords = ThesaurusKeyword.objects.filter(thesaurus=alt)
             self.assertEqual(2, len(keywords))
@@ -95,7 +96,7 @@ class TestLoadThesaurus(TestCase):
         with open(self.rdf_path) as f:
             uf = UploadedFile(f, name="bad_extension.ext")
             with self.assertRaises(ParserError):
-                management.call_command("load_thesaurus", file=uf, name="alt_name", stdout="out", stderr=None)
+                management.call_command("thesaurus", "load", file=uf, identifier="alt_name", stdout="out", stderr=None)
 
     @staticmethod
     def __get_last_thesaurus():

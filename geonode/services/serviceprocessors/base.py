@@ -32,6 +32,7 @@ from geonode.harvesting.models import AsynchronousHarvestingSession, Harvester
 from geonode.services import models, enumerations
 
 if check_ogc_backend(geoserver.BACKEND_PACKAGE):
+    from geonode.geoserver.helpers import noxt_create_workspace
     from geonode.geoserver.helpers import gs_catalog as catalog
 else:
     catalog = None
@@ -47,7 +48,7 @@ def get_geoserver_cascading_workspace(create=True):
     workspace = catalog.get_workspace(name)
     if workspace is None and create:
         uri = f"http://www.geonode.org/{name}"
-        workspace = catalog.create_workspace(name, uri)
+        workspace = noxt_create_workspace(catalog, name, uri)
     return workspace
 
 

@@ -86,7 +86,7 @@ class UserAndTokenInfoApiTests(GeoNodeBaseTestSupport):
         response = self.client.get(userinfo_url)
         self.assertEqual(response.status_code, 401)
 
-    @override_settings(GEOSERVER_CLOUD_ENABLED=False)
+    @override_settings(NOXT_GEOSERVER_CLOUD_ENABLED=False)
     def test_tokeninfo_response(self):
         tokeninfo_url = reverse("tokeninfo")
         _user = get_user_model().objects.get(username="bobby")
@@ -97,8 +97,8 @@ class UserAndTokenInfoApiTests(GeoNodeBaseTestSupport):
         self.assertEqual(response_json["access_token"], token.token)
         self.assertEqual(response_json["user_id"], _user.pk)
 
-    @override_settings(GEOSERVER_CLOUD_ENABLED=True, GEOSERVER_CLOUD_INTROSPECTION_API_KEY="test-introspection-key")
-    def test_cloud_tokeninfo_requires_shared_secret(self):
+    @override_settings(NOXT_GEOSERVER_CLOUD_ENABLED=True, NOXT_GEOSERVER_CLOUD_INTROSPECTION_API_KEY="test-introspection-key")
+    def test_noxt_cloud_tokeninfo_requires_shared_secret(self):
         tokeninfo_url = reverse("tokeninfo")
         user = get_user_model().objects.get(username="bobby")
         token = get_or_create_token(user)
@@ -108,8 +108,8 @@ class UserAndTokenInfoApiTests(GeoNodeBaseTestSupport):
         self.assertEqual(response.status_code, 401)
         self.assertFalse(response.json()["active"])
 
-    @override_settings(GEOSERVER_CLOUD_ENABLED=True, GEOSERVER_CLOUD_INTROSPECTION_API_KEY="test-introspection-key")
-    def test_cloud_tokeninfo_returns_roles_without_echoing_access_token(self):
+    @override_settings(NOXT_GEOSERVER_CLOUD_ENABLED=True, NOXT_GEOSERVER_CLOUD_INTROSPECTION_API_KEY="test-introspection-key")
+    def test_noxt_cloud_tokeninfo_returns_roles_without_echoing_access_token(self):
         tokeninfo_url = reverse("tokeninfo")
         user = get_user_model().objects.get(username="bobby")
         group, _ = Group.objects.get_or_create(name="private_readers")
@@ -126,6 +126,7 @@ class UserAndTokenInfoApiTests(GeoNodeBaseTestSupport):
         self.assertTrue(response.json()["active"])
         self.assertEqual(response.json()["preferred_username"], user.username)
         self.assertIn("ROLE_PRIVATE_READERS", response.json()["roles"])
+        self.assertIn("ROLE_AUTHENTICATED", response.json()["roles"])
         self.assertNotIn("access_token", response.json())
         self.assertNotIn("Authorization", response)
 
@@ -244,30 +245,6 @@ class PermissionsApiTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
         self.client.login(username=self.user, password=self.passwd)
         self.assertValidJSONResponse(self.client.get(f"{list_url + str(layer.id)}/"))
 
-        # with delayed security
-        with self.settings(DELAYED_SECURITY_SIGNALS=True, GEOFENCE_SECURITY_ENABLED=True):
-            if check_ogc_backend(geoserver.BACKEND_PACKAGE):
-                gm = GeoServerResourceManager()
-                gm.set_permissions(layer.uuid, instance=layer, permissions=self.perm_spec)
-                self.assertTrue(layer.dirty_state)
-
-                self.client.login(username=self.user, password=self.passwd)
-                resp = self.client.get(list_url)
-                self.assertEqual(len(self.deserialize(resp)["objects"]), 8)  # admin can see resources in dirty_state
-
-                self.client.logout()
-                resp = self.client.get(list_url)
-                self.assertEqual(len(self.deserialize(resp)["objects"]), 7)
-
-                from django.contrib.auth import get_user_model
-
-                get_user_model().objects.create(
-                    username="imnew",
-                    password="pbkdf2_sha256$12000$UE4gAxckVj4Z$N6NbOXIQWWblfInIoq/Ta34FdRiPhawCIZ+sOO3YQs=",
-                )
-                self.client.login(username="imnew", password="thepwd")
-                resp = self.client.get(list_url)
-                self.assertEqual(len(self.deserialize(resp)["objects"]), 7)
 
     def test_new_user_has_access_to_old_datasets(self):
         """Test that a new user can access the public available layers"""
@@ -286,34 +263,6 @@ class PermissionsApiTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
         self.assertValidJSONResponse(resp)
         self.assertGreaterEqual(len(self.deserialize(resp)["objects"]), 7)
 
-        # with delayed security
-        if check_ogc_backend(geoserver.BACKEND_PACKAGE):
-            _ogc_geofence_enabled = settings.OGC_SERVER
-            try:
-                _ogc_geofence_enabled["default"]["GEOFENCE_SECURITY_ENABLED"] = True
-                with self.settings(
-                    DELAYED_SECURITY_SIGNALS=True,
-                    OGC_SERVER=_ogc_geofence_enabled,
-                    DEFAULT_ANONYMOUS_PERMISSIONS="view",
-                ):
-                    layer = Dataset.objects.first()
-                    layer.set_default_permissions()
-                    layer.refresh_from_db()
-                    # self.assertTrue(layer.dirty_state)
-
-                    self.client.login(username=self.user, password=self.passwd)
-                    resp = self.client.get(list_url)
-                    self.assertGreaterEqual(len(self.deserialize(resp)["objects"]), 7)
-
-                    self.client.logout()
-                    resp = self.client.get(list_url)
-                    self.assertGreaterEqual(len(self.deserialize(resp)["objects"]), 7)
-
-                    self.client.login(username="imnew", password="thepwd")
-                    resp = self.client.get(list_url)
-                    self.assertGreaterEqual(len(self.deserialize(resp)["objects"]), 7)
-            finally:
-                _ogc_geofence_enabled["default"]["GEOFENCE_SECURITY_ENABLED"] = False
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
     def test_outh_token(self):

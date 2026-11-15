@@ -91,8 +91,8 @@ services:
       nginx:
         condition: service_healthy
 
-  # Geoserver backend
-  geoserver:
+  # Classic GeoServer backend; the unified Cloud stack uses the service key `geoserver`.
+  legacy-geoserver:
     image: geonode/geoserver:2.28.x-latest
     container_name: geoserver4${COMPOSE_PROJECT_NAME}
     healthcheck:
@@ -115,6 +115,10 @@ services:
     depends_on:
       django:
         condition: service_healthy
+    networks:
+      default:
+        aliases:
+          - geoserver
 
 
   # PostGIS database.
@@ -135,6 +139,7 @@ services:
       - ./docker/postgresql/docker-entrypoint-wrapper.sh:/usr/local/bin/geonode-postgres-entrypoint.sh:ro
       - ./docker/postgresql/postgresql.conf:/etc/postgresql/postgresql.conf:ro
       - ./docker/postgresql/conf.d:/etc/postgresql/conf.d:ro
+      - ./docker/postgresql/initdb/zzzz_create_geonode_datastore.sql:/docker-entrypoint-initdb.d/zzzz_create_geonode_datastore.sql:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -d postgres -U postgres"]

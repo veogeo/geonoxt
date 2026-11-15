@@ -68,7 +68,9 @@ class UserInfoView(APIView):
             out = {"success": False, "status": "error", "errors": {"user": ["User is not authenticated"]}}
             return json_response(out, status=401)
 
-        access_token = get_auth_token(user)
+        access_token = None
+        if not getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+            access_token = get_auth_token(user)
         groups = [group.name for group in user.groups.all()]
         if user.is_superuser:
             groups.append("admin")
@@ -81,9 +83,10 @@ class UserInfoView(APIView):
             "email": user_email(user),
             "preferred_username": user_username(user),
             "groups": groups,
-            "access_token": str(access_token),
             "perms": permissions_registry.get_perms(user=user, use_cache=True),
         }
+        if access_token:
+            user_info["access_token"] = str(access_token)
 
         response = Response(user_info)
         response["Cache-Control"] = "no-store"
@@ -93,8 +96,8 @@ class UserInfoView(APIView):
 
 @csrf_exempt
 def verify_token(request):
-    if getattr(settings, "GEOSERVER_CLOUD_ENABLED", False):
-        expected_key = getattr(settings, "GEOSERVER_CLOUD_INTROSPECTION_API_KEY", "")
+    if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+        expected_key = getattr(settings, "NOXT_GEOSERVER_CLOUD_INTROSPECTION_API_KEY", "")
         supplied_key = request.headers.get("X-GeoNode-Introspection-Key", "")
         if not expected_key or not hmac.compare_digest(supplied_key, expected_key):
             return HttpResponse(json.dumps({"active": False}), status=401, content_type="application/json")
@@ -121,14 +124,15 @@ def verify_token(request):
                 "sub": token.user.username,
                 "preferred_username": token.user.username,
                 "exp": int(token.expires.timestamp()),
-                "roles": [f"ROLE_{group.name.upper()}" for group in token.user.groups.all()],
+                "roles": [f"ROLE_{group.name.upper()}" for group in token.user.groups.all()]
+                + (["ROLE_AUTHENTICATED"] if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False) else []),
             }
-            if not getattr(settings, "GEOSERVER_CLOUD_ENABLED", False):
+            if not getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
                 # Preserve the legacy GeoServer tokeninfo response outside Cloud mode.
                 token_info["access_token"] = access_token
 
             response = HttpResponse(json.dumps(token_info), content_type="application/json")
-            if not getattr(settings, "GEOSERVER_CLOUD_ENABLED", False):
+            if not getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
                 response["Authorization"] = f"Bearer {access_token}"
             return response
         else:

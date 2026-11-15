@@ -47,7 +47,6 @@
 
     Once everything has been setup and it is working, choose the `Administrator role` and `Group administrator role` as `ROLE_ADMIN`
 
-## Allow GeoFence to validate rules with `ROLES`
+## GeoServer Cloud roles
 
-!!! Warning
-    The following instructions are different according to the GeoServer version you are currently using.
+GeoServer Cloud role synchronization and ACL group mapping are documented in the [GeoNode + GeoServer Cloud guide](../../../docker/geoserver-cloud.md).

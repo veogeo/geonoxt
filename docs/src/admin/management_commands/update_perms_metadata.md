@@ -45,7 +45,7 @@ usage: manage.py sync_geonode_datasets [-h] [--version] [-v {0,1,2,3}]
                                     [-u USERNAME] [--updatepermissions]
                                     [--updatethumbnails] [--updateattributes][--updatebbox]
 
-Update the GeoNode Datasets: permissions (including GeoFence database),
+Update the GeoNode Datasets: permissions (including GeoServer Cloud ACL rules),
 statistics, thumbnails
 
 optional arguments:

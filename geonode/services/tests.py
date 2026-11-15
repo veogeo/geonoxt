@@ -224,6 +224,7 @@ class ModuleFunctionsTestCase(StandardTestCase):
 
     @mock.patch("geonode.services.serviceprocessors.base.catalog", autospec=True)
     @mock.patch("geonode.services.serviceprocessors.base.settings", autospec=True)
+    @override_settings(NOXT_GEOSERVER_CLOUD_ENABLED=False)
     def test_get_cascading_workspace_returns_existing(self, mock_settings, mock_catalog):
         mock_settings.OGC_SERVER = {
             "default": {
@@ -233,6 +234,7 @@ class ModuleFunctionsTestCase(StandardTestCase):
             }
         }
         mock_settings.CASCADE_WORKSPACE = "something"
+        mock_settings.NOXT_GEOSERVER_CLOUD_ENABLED = False
         phony_workspace = "fake"
         cat = mock_catalog
         cat.get_workspace.return_value = phony_workspace
@@ -242,6 +244,7 @@ class ModuleFunctionsTestCase(StandardTestCase):
 
     @mock.patch("geonode.services.serviceprocessors.base.catalog", autospec=True)
     @mock.patch("geonode.services.serviceprocessors.base.settings", autospec=True)
+    @override_settings(NOXT_GEOSERVER_CLOUD_ENABLED=False)
     def test_get_cascading_workspace_creates_new_workspace(self, mock_settings, mock_catalog):
         mock_settings.OGC_SERVER = {
             "default": {
@@ -251,6 +254,7 @@ class ModuleFunctionsTestCase(StandardTestCase):
             }
         }
         mock_settings.CASCADE_WORKSPACE = "something"
+        mock_settings.NOXT_GEOSERVER_CLOUD_ENABLED = False
         phony_workspace = "fake"
         cat = mock_catalog
         cat.get_workspace.return_value = None

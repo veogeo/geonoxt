@@ -26,7 +26,7 @@ from urllib.parse import urljoin
 from owslib.etree import etree as dlxml
 
 from django.conf import settings
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.test.utils import override_settings
 from django.urls import reverse
 
@@ -42,6 +42,7 @@ from django.contrib.auth import get_user_model
 
 from geonode.geoserver.helpers import (
     gs_catalog,
+    noxt_create_workspace,
     ows_endpoint_in_path,
     get_dataset_storetype,
     extract_name_from_sld,
@@ -59,6 +60,32 @@ from geonode.services.enumerations import REST_MAP, INDEXED, WMS
 from unittest.mock import patch, Mock
 
 logger = logging.getLogger(__name__)
+
+
+class Noxt_CreateWorkspaceTest(SimpleTestCase):
+    def test_noxt_cloud_creates_workspace_with_workspaces_endpoint(self):
+        workspace = Mock()
+        response = Mock(status_code=201, text="")
+        catalog = Mock()
+        catalog.service_url = "http://gateway:8080/geoserver/cloud/rest"
+        catalog.http_request.return_value = response
+        catalog.get_workspaces.return_value = [workspace]
+        catalog._cache = {f"{catalog.service_url}/workspaces.xml": "stale"}
+
+        with override_settings(NOXT_GEOSERVER_CLOUD_ENABLED=True):
+            result = noxt_create_workspace(catalog, "geonode", "https://example.test/geonode")
+
+        assert result is workspace
+        catalog.http_request.assert_called_once_with(
+            "http://gateway:8080/geoserver/cloud/rest/workspaces",
+            method="post",
+            data="<workspace><name>geonode</name></workspace>",
+            headers={"Content-Type": "application/xml"},
+        )
+        catalog.get_workspaces.assert_called_once_with(names="geonode")
+        assert f"{catalog.service_url}/workspaces.xml" not in catalog._cache
+        catalog.create_workspace.assert_not_called()
+
 
 
 class HelperTest(GeoNodeBaseTestSupport):

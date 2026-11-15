@@ -129,12 +129,9 @@ class SpecialGroupsPermissionsHandler(BasePermissionsHandler):
             )
 
         registered_compact = get_default_registered_members_compact_permission()
-        try:
-            registered_group = Group.objects.get(name=groups_settings.REGISTERED_MEMBERS_GROUP_NAME)
-        except Group.DoesNotExist:
-            registered_group = None
+        registered_group, _ = Group.objects.get_or_create(name=groups_settings.REGISTERED_MEMBERS_GROUP_NAME)
 
-        if registered_group and registered_group not in payload["groups"]:
+        if registered_group not in payload["groups"]:
             payload["groups"][registered_group] = sorted(
                 _to_extended_perms(registered_compact, _resource_type, _resource_subtype)
             )

@@ -36,7 +36,19 @@ def extract_user_from_headers(request):
     user = AnonymousUser()
     if "HTTP_AUTHORIZATION" in request.META:
         auth_header = request.META.get("HTTP_AUTHORIZATION", request.META.get("HTTP_AUTHORIZATION2"))
-        user = token_header_authenticate_user(auth_header)
+        if (
+            getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False)
+            and auth_header
+            and auth_header.lower().startswith("bearer ")
+        ):
+            from geonode.base.oauth import authenticate_cloud_access_token
+
+            try:
+                user, _claims = authenticate_cloud_access_token(auth_header.split(None, 1)[1])
+            except Exception:
+                user = AnonymousUser()
+        else:
+            user = token_header_authenticate_user(auth_header)
 
     if settings.ENABLE_APIKEY_LOGIN and "apikey" in request.GET:
         user = get_auth_user_from_token(request.GET.get("apikey"))

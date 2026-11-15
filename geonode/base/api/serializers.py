@@ -19,7 +19,7 @@
 import logging
 
 from slugify import slugify
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit, urlunsplit
 import json
 
 from django.db.models import Q
@@ -574,8 +574,39 @@ class LinksSerializer(DynamicModelSerializer):
         )
         for lnk in links:
             formatted_link = model_to_dict(lnk, fields=link_fields)
+            if formatted_link["link_type"] == "OGC:WFS":
+                formatted_link["url"] = _geoserver_cloud_wfs_url(formatted_link["url"])
             ret.append(formatted_link)
         return ret
+
+
+def _geoserver_cloud_wfs_url(link_url):
+    """Use GeoServer Cloud's explicit WFS route for GeoNode-owned layers.
+
+    GeoServer Cloud routes `/ows` requests using the `service` query parameter.
+    WFS-T declares the service in its XML body instead, so a bare `/ows` POST
+    falls through to the wrong backend. The gateway has a dedicated `/wfs`
+    route that accepts the transaction directly.
+    """
+    if not getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+        return link_url
+
+    public_location = settings.OGC_SERVER.get("default", {}).get("PUBLIC_LOCATION")
+    if not public_location:
+        return link_url
+
+    public_url = urlsplit(public_location)
+    service_url = urlsplit(link_url)
+    public_path = public_url.path.rstrip("/")
+    service_path = service_url.path
+    if (
+        (service_url.scheme, service_url.netloc) != (public_url.scheme, public_url.netloc)
+        or not service_path.startswith(f"{public_path}/")
+        or not service_path.lower().endswith("/ows")
+    ):
+        return link_url
+
+    return urlunsplit(service_url._replace(path=f"{service_path[:-3]}wfs"))
 
 
 class ResourceBaseSerializer(MultiLangOutputMixin, DynamicModelSerializer):

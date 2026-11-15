@@ -296,7 +296,7 @@ class OGC_Servers_Handler:
             "MAPFISH_PRINT_ENABLED",
             "PRINT_NG_ENABLED",
             "GEONODE_SECURITY_ENABLED",
-            "GEOFENCE_SECURITY_ENABLED",
+            "ACL_SECURITY_ENABLED",
             "BACKEND_WRITE_ENABLED",
         ]:
             server.setdefault(option, True)
@@ -304,7 +304,7 @@ class OGC_Servers_Handler:
         for option in ["WMST_ENABLED", "WPS_ENABLED"]:
             server.setdefault(option, False)
 
-        for option in ["TIMEOUT", "GEOFENCE_TIMEOUT"]:
+        for option in ["TIMEOUT"]:
             server.setdefault(option, 60)
 
     def __getitem__(self, alias):

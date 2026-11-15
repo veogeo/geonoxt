@@ -18,8 +18,13 @@
 #########################################################################
 
 import os
+import uuid
+
+import psycopg2
+from psycopg2 import sql
 
 from django.conf import settings
+from django.db import connections
 from django.urls import reverse
 
 from geonode.tests.base import GeoNodeBaseTestSupport
@@ -30,6 +35,38 @@ from geonode.decorators import on_ogc_backend
 from geonode.geoserver.signals import gs_catalog
 
 from .utils import create_dataset
+
+
+def noxt_cleanup_test_dataset(dataset_name):
+    """Remove only a temporary layer created by CreateLayerCoreTest."""
+    allowed_prefixes = ("noxt_point_dataset_", "noxt_attributes_dataset_")
+    if not dataset_name.startswith(allowed_prefixes):
+        raise ValueError(f"Refusing to clean non-test dataset {dataset_name!r}")
+    try:
+        layer = gs_catalog.get_layer(dataset_name)
+        if layer is not None:
+            gs_catalog.delete(layer)
+    finally:
+        noxt_drop_test_datastore_table(dataset_name)
+
+
+def noxt_drop_test_datastore_table(table_name):
+    """Drop only a uniquely named table created by this integration test."""
+    database = connections["datastore"].settings_dict
+    database_name = database["NAME"]
+    with psycopg2.connect(
+        dbname=database_name,
+        user=database["USER"],
+        password=database["PASSWORD"],
+        host=database["HOST"],
+        port=database["PORT"],
+        connect_timeout=5,
+    ) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                sql.SQL("DROP TABLE IF EXISTS public.{} CASCADE").format(sql.Identifier(table_name))
+            )
+
 
 
 class CreateLayerCoreTest(GeoNodeBaseTestSupport):
@@ -60,11 +97,10 @@ class CreateLayerCoreTest(GeoNodeBaseTestSupport):
         """
         Try creating a layer.
         """
-        internal_apps_tests = os.environ.get("TEST_RUN_INTERNAL_APPS", None)
-        if not internal_apps_tests:
-            internal_apps_tests = settings.internal_apps_tests
-        else:
-            dataset_name = "point_dataset"
+        internal_apps_tests = os.environ.get("TEST_RUN_INTERNAL_APPS") or getattr(settings, "internal_apps_tests", False)
+        if internal_apps_tests:
+            dataset_name = f"noxt_point_dataset_{uuid.uuid4().hex[:8]}"
+            self.addCleanup(noxt_cleanup_test_dataset, dataset_name)
             dataset_title = "A layer for points"
             print(settings.DATABASES["datastore"])
             print("#######")
@@ -84,18 +120,26 @@ class CreateLayerCoreTest(GeoNodeBaseTestSupport):
                 self.assertEqual(gs_dataset.name, dataset_name)
 
                 resource = gs_dataset.resource
-                # we must have only one attibute ('the_geom')
-                self.assertEqual(len(resource.attributes), 1)
+                # Cloud exposes the generated primary key (`fid`) as well as the
+                # geometry column. Check the data schema without counting the PK.
+                attribute_names = set(resource.attributes)
+                if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+                    self.assertEqual(attribute_names, {"fid", "the_geom"})
+                else:
+                    self.assertEqual(attribute_names, {"the_geom"})
+                if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+                    self.assertEqual(resource.workspace.name, settings.DEFAULT_WORKSPACE)
 
                 # check layer corrispondence between django and geoserver
                 self.assertEqual(resource.title, dataset_title)
                 self.assertEqual(resource.projection, layer.srid)
 
                 # check if layer detail page is accessible with client
-                response = self.client.get(reverse("dataset_embed", args=(f"geonode:{dataset_name}",)))
+                response = self.client.get(reverse("dataset_embed", args=(f"{settings.DEFAULT_WORKSPACE}:{dataset_name}",)))
                 self.assertEqual(response.status_code, 200)
             finally:
                 cat.delete(gs_dataset)
+                noxt_drop_test_datastore_table(dataset_name)
 
     def test_dataset_creation_with_wrong_geometry_type(self):
         """
@@ -109,11 +153,8 @@ class CreateLayerCoreTest(GeoNodeBaseTestSupport):
         """
         Try creating a layer with attributes.
         """
-        internal_apps_tests = os.environ.get("TEST_RUN_INTERNAL_APPS", None)
-        if not internal_apps_tests:
-            internal_apps_tests = settings.internal_apps_tests
-
-        else:
+        internal_apps_tests = os.environ.get("TEST_RUN_INTERNAL_APPS") or getattr(settings, "internal_apps_tests", False)
+        if internal_apps_tests:
             attributes = """
             {
               "field_str": "string",
@@ -123,7 +164,8 @@ class CreateLayerCoreTest(GeoNodeBaseTestSupport):
             }
             """
 
-            dataset_name = "attributes_dataset"
+            dataset_name = f"noxt_attributes_dataset_{uuid.uuid4().hex[:8]}"
+            self.addCleanup(noxt_cleanup_test_dataset, dataset_name)
             dataset_title = "A layer with attributes"
 
             create_dataset(dataset_name, dataset_title, "bobby", "Point", attributes)
@@ -133,21 +175,26 @@ class CreateLayerCoreTest(GeoNodeBaseTestSupport):
             try:
                 resource = gs_dataset.resource
 
-                # we must have one attibute for the geometry, and 4 other ones
-                self.assertEqual(len(resource.attributes), 5)
+                # Count geometry and user fields separately from the Cloud PK.
+                attribute_names = set(resource.attributes)
+                expected_names = {"the_geom", "field_str", "field_int", "field_date", "field_float"}
+                if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+                    expected_names.add("fid")
+                    self.assertEqual(resource.workspace.name, settings.DEFAULT_WORKSPACE)
+                self.assertEqual(attribute_names, expected_names)
             finally:
                 cat.delete(gs_dataset)
+                noxt_drop_test_datastore_table(dataset_name)
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
     def test_dataset_creation_with_custom_srs(self):
         """
         Try creating a layer with a custom SRS.
         """
-        internal_apps_tests = os.environ.get("TEST_RUN_INTERNAL_APPS", None)
-        if not internal_apps_tests:
-            internal_apps_tests = settings.internal_apps_tests
-        else:
-            dataset_name = "point_dataset_3857"
+        internal_apps_tests = os.environ.get("TEST_RUN_INTERNAL_APPS", "False").lower() in {"true", "1", "yes"}
+        if internal_apps_tests:
+            dataset_name = f"noxt_point_dataset_3857_{uuid.uuid4().hex[:8]}"
+            self.addCleanup(noxt_cleanup_test_dataset, dataset_name)
             dataset_title = "A layer for points 3857"
             custom_srs = "EPSG:3857"
 
@@ -165,12 +212,15 @@ class CreateLayerCoreTest(GeoNodeBaseTestSupport):
                 self.assertEqual(gs_dataset.name, dataset_name)
 
                 resource = gs_dataset.resource
-                # we must have only one attibute ('the_geom')
-                self.assertEqual(len(resource.attributes), 1)
+                if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+                    self.assertEqual(set(resource.attributes), {"fid", "the_geom"})
+                else:
+                    self.assertEqual(len(resource.attributes), 1)
 
-                # check layer corrispondence between django and geoserver
+                # check layer corrispondence between Django and GeoServer
                 self.assertEqual(resource.title, dataset_title)
                 self.assertEqual(resource.projection, custom_srs)
                 self.assertEqual(layer.srid, custom_srs)
             finally:
                 cat.delete(gs_dataset)
+                noxt_drop_test_datastore_table(dataset_name)

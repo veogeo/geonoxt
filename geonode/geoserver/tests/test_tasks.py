@@ -7,7 +7,7 @@ from geonode.geoserver.tasks import (
     geoserver_set_style,
     synch_guardian,
 )
-from geonode.geoserver.geofence import Batch
+from geonode.geoserver.acl_rules import Noxt_ACLRuleBatch
 from geonode.geoserver.signals import geoserver_automatic_default_style_set
 from geonode.layers.models import Dataset
 from geonode.layers.populate_datasets_data import create_dataset_data
@@ -44,10 +44,10 @@ class TasksTest(GeoNodeBaseTestSupport):
 
         mock_sync.assert_called_once_with()
 
-    @patch("geonode.geoserver.tasks.geofence.run_batch")
-    @patch("geonode.geoserver.tasks.gf_utils.collect_delete_layer_rules")
+    @patch("geonode.geoserver.tasks.acl_client.run_batch")
+    @patch("geonode.geoserver.tasks.acl_rule_manager.collect_delete_layer_rules")
     def test_deleted_dataset_security_cleanup_is_safe_when_no_rules_remain(self, mock_collect, mock_run_batch):
-        batch = Batch("test")
+        batch = Noxt_ACLRuleBatch("test")
         mock_collect.return_value = batch
 
         self.assertTrue(geoserver_delete_security_rules.run("workspace", "deleted_layer"))

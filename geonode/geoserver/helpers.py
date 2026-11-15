@@ -19,6 +19,7 @@
 import os
 import re
 import sys
+import base64
 import copy
 import time
 import uuid
@@ -34,6 +35,7 @@ from os.path import basename, splitext, isfile
 from urllib.parse import urlparse, urlunparse, urlencode, urlsplit, urljoin, parse_qsl
 from bs4 import BeautifulSoup
 import xml.etree.ElementTree as ET
+from xml.sax.saxutils import escape
 
 from django.conf import settings
 from django.utils import timezone
@@ -79,9 +81,26 @@ from geonode.utils import (
     safe_request_url,
 )
 
-from .geofence import GeoFenceClient, GeoFenceUtils
+from .acl_rules import Noxt_ACLRuleManager
+from .noxt_acl import Noxt_GeoServerACLClient
 
 logger = logging.getLogger(__name__)
+
+
+def noxt_create_workspace(catalog, name, uri):
+    """Create a workspace through GeoServer Cloud's supported REST endpoint."""
+    xml = f"<workspace><name>{escape(name)}</name></workspace>"
+    headers = {"Content-Type": "application/xml"}
+    workspace_url = f"{catalog.service_url}/workspaces"
+    response = catalog.http_request(workspace_url, method="post", data=xml, headers=headers)
+    if response.status_code not in (200, 201, 202):
+        raise FailedRequestError(
+            f"Failed to create workspace {name} : {response.status_code}, {response.text}"
+        )
+
+    catalog._cache.pop(f"{catalog.service_url}/workspaces.xml", None)
+    workspaces = catalog.get_workspaces(names=name)
+    return workspaces[0] if workspaces else None
 
 temp_style_name_regex = r"[a-zA-Z0-9]{8}-[a-zA-Z0-9]{4}-[a-zA-Z0-9]{4}-[a-zA-Z0-9]{4}-[a-zA-Z0-9]{12}_ms_.*"
 
@@ -758,7 +777,7 @@ def gs_slurp(
                     layer.srid = "EPSG:4326"
             layer.set_ll_bbox_polygon([ll_bbox[0], ll_bbox[2], ll_bbox[1], ll_bbox[3]])
 
-            # sync permissions in GeoFence
+            # sync permissions in GeoServer ACL
             perm_spec = json.loads(_perms_info_json(layer))
             resolved_resource_manager = resource_manager_registry.get_for_instance(layer)
             resolved_resource_manager.set_permissions(layer.uuid, instance=layer, permissions=perm_spec)
@@ -1690,6 +1709,8 @@ def wps_execute_dataset_attribute_statistics(dataset_name, field):
 
 def _stylefilterparams_geowebcache_dataset(dataset_name):
     headers = {"Content-Type": "text/xml"}
+    encoded_credentials = base64.b64encode(f"{_user}:{_password}".encode("UTF-8")).decode("ascii")
+    headers["Authorization"] = f"Basic {encoded_credentials}"
     url = f"{ogc_server_settings.LOCATION}gwc/rest/layers/{dataset_name}.xml"
 
     # read GWC configuration
@@ -1720,6 +1741,8 @@ def _invalidate_geowebcache_dataset(dataset_name, url=None):
     headers = {
         "Content-Type": "text/xml",
     }
+    encoded_credentials = base64.b64encode(f"{_user}:{_password}".encode("UTF-8")).decode("ascii")
+    headers["Authorization"] = f"Basic {encoded_credentials}"
     body = f"""
         <truncateLayer><layerName>{dataset_name}</layerName></truncateLayer>
         """.strip()
@@ -1921,22 +1944,17 @@ gs_catalog = Catalog(
 gs_uploader = Client(url, _user, _password)
 
 
-def _create_geofence_client():
-    if settings.GEOSERVER_SECURITY_BACKEND == "acl":
-        from geonode.geoserver.acl import GeoServerACLClient
-
-        client = GeoServerACLClient(
-            settings.GEOSERVER_ACL_URL, settings.GEOSERVER_ACL_USER, settings.GEOSERVER_ACL_PASSWORD
-        )
-    else:
-        gf_rest_url = f'{url.rstrip("/")}/geofence/'
-        client = GeoFenceClient(gf_rest_url, _user, _password)
-    client.set_timeout(ogc_server_settings.GEOFENCE_TIMEOUT)
-    return client
+def _create_acl_client():
+    return Noxt_GeoServerACLClient(
+        settings.NOXT_GEOSERVER_ACL_URL,
+        settings.NOXT_GEOSERVER_ACL_USER,
+        settings.NOXT_GEOSERVER_ACL_PASSWORD,
+        timeout=ogc_server_settings.TIMEOUT,
+    )
 
 
-geofence = _create_geofence_client()
-gf_utils = GeoFenceUtils(geofence)
+acl_client = _create_acl_client()
+acl_rule_manager = Noxt_ACLRuleManager(acl_client)
 
 _punc = re.compile(r"[\.:]")  # regex for punctuation that confuses restconfig
 _foregrounds = ["#ffbbbb", "#bbffbb", "#bbbbff", "#ffffbb", "#bbffff", "#ffbbff"]

@@ -181,10 +181,11 @@ def get_map(
     wms_endpoint = ""
     additional_kwargs = {}
     if thumbnail_url == ogc_server_settings.LOCATION:
-        # add access token to requests to Geoserver (logic based on the previous implementation)
+        # GeoServer Cloud's internal thumbnail requests use the configured
+        # service credentials. Classic GeoServer keeps its existing token flow.
         username = ogc_server_settings.credentials.username
         user = get_user_model().objects.filter(username=username).first()
-        if user:
+        if user and not settings.NOXT_GEOSERVER_CLOUD_ENABLED:
             access_token = get_or_create_token(user)
             if access_token and not access_token.is_expired():
                 additional_kwargs["access_token"] = access_token.token

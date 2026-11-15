@@ -47,7 +47,7 @@ from geonode.metadata.manager import metadata_manager
 from geonode.metadata.tracking.operation import metadata_tracker
 from geonode.thumbs.thumbnails import _generate_thumbnail_name
 from geonode.thumbs.utils import ThumbnailAlgorithms
-from geonode.security.permissions import PermSpecCompact, DATA_STYLABLE_RESOURCES_SUBTYPES
+from geonode.security.permissions import PermSpecCompact, DATA_STYLABLE_RESOURCES_SUBTYPES, OWNER_PERMISSIONS
 from geonode.security.utils import (
     perms_as_set,
     get_user_groups,
@@ -606,6 +606,11 @@ class BaseResourceManager(ResourceManagerInterface):
                     _resource.refresh_from_db()
                     _resource = self.update(_resource.uuid, _resource, vals=to_update)
                     _source_perms = permissions_registry.get_perms(instance=instance, include_virtual=False)
+                    _clone_owner = _resource.owner
+                    _source_perms.setdefault("users", {})[_clone_owner] = list(
+                        perms_as_set(_source_perms.get("users", {}).get(_clone_owner, []))
+                        | perms_as_set(OWNER_PERMISSIONS)
+                    )
                     self.set_permissions(_resource.uuid, instance=_resource, permissions=_source_perms)
                     return _resource
                 except Exception as e:
@@ -676,7 +681,7 @@ class BaseResourceManager(ResourceManagerInterface):
                         object_pk=_resource.id,
                     ).delete()
                     if is_remote_resource(_resource):
-                        # Remote resources live on external GeoServers, no GeoFence rules to remove
+                        # Remote resources live on external GeoServers, no ACL rules to remove
                         logger.debug("Skipping remove_permissions for remote resource %s", _resource)
                     else:
                         success = self._concrete_resource_manager.remove_permissions(
@@ -962,10 +967,10 @@ class BaseResourceManager(ResourceManagerInterface):
 
                     # Fixup GIS Backend Security Rules Accordingly
                     if is_remote_resource(_resource):
-                        # Remote resources live on external GeoServers, no GeoFence sync needed
+                        # Remote resources live on external GeoServers, no ACL sync needed
                         logger.debug("Skipping set_permissions for remote resource %s", _resource)
                     else:
-                        # Local resources need GeoFence / GeoServer permission sync
+                        # Local resources need ACL / GeoServer permission sync
                         success = self._concrete_resource_manager.set_permissions(
                             uuid,
                             instance=_resource,

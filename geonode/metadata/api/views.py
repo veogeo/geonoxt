@@ -320,6 +320,7 @@ class ProfileAutocomplete(autocomplete.Select2QuerySetView):
         else:
             qs = get_user_model().objects.none()
 
+        qs = qs.order_by("username")
         if self.q:
             qs = qs.filter(
                 Q(username__icontains=self.q)

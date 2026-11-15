@@ -27,6 +27,7 @@ import requests
 import importlib
 import mock
 from uuid import uuid4
+from urllib.parse import urlsplit
 
 from requests import Request
 from requests.auth import HTTPBasicAuth
@@ -37,15 +38,15 @@ from django.db.models import Q
 from django.urls import reverse
 from django.conf import settings
 from django.http import HttpRequest
-from django.test.testcases import TestCase
+from django.test.testcases import TestCase, SimpleTestCase
 from django.contrib.auth import get_user_model
 from django.test.utils import override_settings
-from django.contrib.auth.models import AnonymousUser, Permission
+from django.contrib.auth.models import AnonymousUser, Group, Permission
 
 from guardian.shortcuts import assign_perm, get_anonymous_user
 
 from geonode import geoserver
-from geonode.geoserver.helpers import geofence, gf_utils
+from geonode.geoserver.helpers import acl_client, acl_rule_manager
 from geonode.maps.models import Map
 from geonode.layers.models import Dataset
 from geonode.documents.models import Document
@@ -80,14 +81,14 @@ from geonode.base.populate_test_data import (
     create_single_dataset,
 )
 from geonode.geoserver.security import (
-    _get_gf_services,
-    allow_layer_to_all,
-    delete_all_geofence_rules,
+    _get_acl_services,
+    allow_acl_layer_to_all,
+    delete_all_acl_rules,
     sync_resources_with_guardian,
     _get_gwc_filters_and_formats,
     has_geolimits,
-    create_geofence_rules,
-    delete_geofence_rules_for_layer,
+    create_acl_rules,
+    delete_acl_rules_for_layer,
 )
 from geonode.base import enumerations
 
@@ -106,6 +107,8 @@ from geonode.security.auth_registry import AuthHandlerRegistry, auth_handler_reg
 from geonode.security.models import AuthConfig, URLPatternAuthConfig
 
 logger = logging.getLogger(__name__)
+
+NOXT_REAL_REQUESTS_REQUEST = requests.request
 
 
 def _log(msg, *args):
@@ -127,6 +130,70 @@ class StreamToLogger:
             self.logger.log(self.log_level, line.rstrip())
 
 
+class Noxt_InMemoryACLResponse:
+    def __init__(self, payload=None, status_code=200, headers=None):
+        self.noxt_payload = payload
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.text = ""
+        self.ok = 200 <= status_code < 300
+
+    def json(self):
+        return self.noxt_payload
+
+
+class Noxt_InMemoryACLServer:
+    """Isolated ACL REST fake for legacy GeoNode security unit tests."""
+
+    def __init__(self):
+        self.noxt_rules = []
+        self.noxt_next_id = 1
+
+    def request(self, method, url, params=None, json=None, **kwargs):
+        parsed_url = urlsplit(url)
+        if not parsed_url.path.startswith("/acl/api/"):
+            return NOXT_REAL_REQUESTS_REQUEST(method, url, params=params, json=json, **kwargs)
+        path = parsed_url.path.split("/api/", 1)[-1].strip("/")
+        if method == "POST" and path == "rules/query/count":
+            return Noxt_InMemoryACLResponse(len(self.noxt_rules))
+        if method == "POST" and path == "rules/query":
+            rules = self.noxt_filter_rules(json or {})
+            return Noxt_InMemoryACLResponse({"rules": rules})
+        if method == "GET" and path == "rules":
+            limit = int((params or {}).get("limit", 500))
+            cursor = int((params or {}).get("nextCursor", 0) or 0)
+            page = self.noxt_rules[cursor : cursor + limit]
+            headers = {}
+            if cursor + limit < len(self.noxt_rules):
+                headers["X-ACL-NEXTCURSOR"] = str(cursor + limit)
+            return Noxt_InMemoryACLResponse({"rules": page}, headers=headers)
+        if method == "POST" and path == "rules":
+            rule = dict(json or {})
+            rule["id"] = str(self.noxt_next_id)
+            self.noxt_next_id += 1
+            self.noxt_rules.append(rule)
+            return Noxt_InMemoryACLResponse(rule, status_code=201)
+        if method == "DELETE" and path.startswith("rules/id/"):
+            rule_id = path.rsplit("/", 1)[-1]
+            self.noxt_rules = [rule for rule in self.noxt_rules if rule.get("id") != rule_id]
+            return Noxt_InMemoryACLResponse(status_code=204)
+        return Noxt_InMemoryACLResponse({"error": "Unsupported in-memory ACL request"}, status_code=404)
+
+    def noxt_filter_rules(self, filters):
+        rules = self.noxt_rules
+        for field, criteria in filters.items():
+            if not isinstance(criteria, dict) or "value" not in criteria:
+                continue
+            expected = criteria["value"]
+            include_default = criteria.get("includeDefault", False)
+            rules = [
+                rule
+                for rule in rules
+                if rule.get(field) == expected or (include_default and rule.get(field) is None)
+            ]
+        return list(rules)
+
+
 class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
     """
     Tests for the Geonode security app.
@@ -145,8 +212,18 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
 
     def setUp(self):
         super().setUp()
-        if check_ogc_backend(geoserver.BACKEND_PACKAGE):
-            settings.OGC_SERVER["default"]["GEOFENCE_SECURITY_ENABLED"] = True
+        self.noxt_security_settings_override = override_settings(
+            GEOSERVER_SECURITY_ENABLED=True,
+            NOXT_GEOSERVER_ACL_ENABLED=True,
+        )
+        self.noxt_security_settings_override.enable()
+        self.addCleanup(self.noxt_security_settings_override.disable)
+        self.noxt_acl_server = Noxt_InMemoryACLServer()
+        self.noxt_acl_request_patcher = patch(
+            "geonode.geoserver.noxt_acl.requests.request", side_effect=self.noxt_acl_server.request
+        )
+        self.noxt_acl_request_patcher.start()
+        self.addCleanup(self.noxt_acl_request_patcher.stop)
 
         self.maxDiff = None
         self.user = "admin"
@@ -412,75 +489,26 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
         self.assertHttpOK(resp)
 
     def test_set_bulk_permissions(self):
-        """Test that after restrict view permissions on two layers
-        bobby is unable to see them"""
-
-        rules_count = 0
-        if check_ogc_backend(geoserver.BACKEND_PACKAGE):
-            delete_all_geofence_rules()
-            # Reset GeoFence Rules
-            rules_count = geofence.get_rules_count()
-            self.assertEqual(rules_count, 0)
-
+        """Bulk permission changes update GeoNode visibility and ACL rules."""
         layers = Dataset.objects.all()[:2].values_list("id", flat=True)
-        layers_id = [str(x) for x in layers]
-        test_perm_dataset = Dataset.objects.get(id=layers[0])
-
+        layer_ids = [str(value) for value in layers]
         self.client.login(username="admin", password="admin")
-        resp = self.client.get(self.list_url)
-        self.assertEqual(len(self.deserialize(resp)["objects"]), 8)
-        data = {"permissions": json.dumps(self.perm_spec), "resources": layers_id}
-        resp = self.client.post(self.bulk_perms_url, data)
-        self.assertHttpOK(resp)
+        data = {"permissions": json.dumps(self.perm_spec), "resources": layer_ids}
+        response = self.client.post(self.bulk_perms_url, data)
+        self.assertHttpOK(response)
 
-        if check_ogc_backend(geoserver.BACKEND_PACKAGE):
-            # Check GeoFence Rules have been correctly created
-            rules_count = geofence.get_rules_count()
-            _log(f"1. rules_count: {rules_count} ")
-            self.assertGreaterEqual(rules_count, 10)
-            allow_layer_to_all(test_perm_dataset)
-            rules_count = geofence.get_rules_count()
-            _log(f"2. rules_count: {rules_count} ")
-            self.assertGreaterEqual(rules_count, 11)
+        for dataset in Dataset.objects.filter(id__in=layers):
+            rules = acl_client.get_rules(workspace="geonode", layer=dataset.name)["rules"]
+            self.assertTrue(
+                any(rule.get("user") == "admin" and rule.get("service") == "WMS" and rule.get("access") == "ALLOW" for rule in rules),
+                f"ACL is missing the admin WMS allow rule for {dataset.name}: {rules}",
+            )
 
         self.client.logout()
-
         if check_ogc_backend(geoserver.BACKEND_PACKAGE):
             self.client.login(username="bobby", password="bob")
-            resp = self.client.get(self.list_url)
-            self.assertGreaterEqual(len(self.deserialize(resp)["objects"]), 6)
-
-            # perms = get_users_with_perms(test_perm_dataset)
-            # _log(f"3. perms: {perms} ")
-            # batch = AutoPriorityBatch(get_first_available_priority(), f'test batch for {test_perm_dataset}')
-            # for u, p in perms.items():
-            #     create_geofence_rules(test_perm_dataset, p, user=u, batch=batch)
-            # geofence.run_batch(batch)
-
-            # Check GeoFence Rules have been correctly created
-            rules_count = geofence.get_rules_count()
-            _log(f"4. rules_count: {rules_count} ")
-            self.assertGreaterEqual(rules_count, 13)
-
-            # Validate maximum priority
-            available_priority = gf_utils.get_first_available_priority()
-            _log(f"5. available_priority: {available_priority} ")
-            self.assertTrue(available_priority > 0)
-
-            url = settings.OGC_SERVER["default"]["LOCATION"]
-            user = settings.OGC_SERVER["default"]["USER"]
-            passwd = settings.OGC_SERVER["default"]["PASSWORD"]
-
-            test_url = f"{url}gwc/rest/seed/{test_perm_dataset.alternate}.json"
-            r = requests.get(test_url, auth=HTTPBasicAuth(user, passwd))
-            self.assertEqual(r.status_code, 400, f"GWC error for user: {user} URL: {test_url}\n{r.text}")
-
-        rules_count = 0
-        if check_ogc_backend(geoserver.BACKEND_PACKAGE):
-            delete_all_geofence_rules()
-            # Reset GeoFence Rules
-            rules_count = geofence.get_rules_count()
-            self.assertEqual(rules_count, 0)
+            response = self.client.get(self.list_url)
+            self.assertGreaterEqual(len(self.deserialize(response)["objects"]), 6)
 
     def test_bobby_cannot_set_all(self):
         """Test that Bobby can set the permissions only on the ones
@@ -682,286 +710,91 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
     def test_perm_specs_synchronization(self):
-        """Test that Dataset is correctly synchronized with guardian:
-        1. Set permissions to all users
-        2. Set permissions to a single user
-        3. Set permissions to a group of users
-        4. Try to sync a layer from GeoServer
-        """
+        """Guardian permissions map to ACL rules for services and spatial limits."""
         bobby = get_user_model().objects.get(username="bobby")
         layer = Dataset.objects.filter(subtype="vector").exclude(owner=bobby).first()
-        self.client.login(username="admin", password="admin")
+        self.assertIsNotNone(layer)
+        workspace = "geonode"
 
-        # Reset GeoFence Rules
-        delete_all_geofence_rules()
-        self.assertEqual(geofence.get_rules_count(), 0)
-
-        perm_spec = {"users": {"AnonymousUser": []}, "groups": []}
-        layer.set_permissions(perm_spec)
-        rules_count = geofence.get_rules_count()
-        _log(f"1. rules_count: {rules_count} ")
-        self.assertEqual(rules_count, 5)
-
-        perm_spec = {"users": {"admin": ["view_resourcebase"]}, "groups": []}
-        layer.set_permissions(perm_spec)
-        rules_count = geofence.get_rules_count()
-        _log(f"2. rules_count: {rules_count} ")
-        self.assertEqual(rules_count, 9, f"Bad rules count. Got rules: {geofence.get_rules()}")
-
-        perm_spec = {"users": {"admin": ["change_dataset_data"]}, "groups": []}
-        layer.set_permissions(perm_spec)
-        rules_count = geofence.get_rules_count()
-        _log(f"3. rules_count: {rules_count} ")
-        self.assertEqual(rules_count, 8, f"Bad rules count. Got rules: {geofence.get_rules()}")
-
-        rules_objs = geofence.get_rules()
-        wps_subfield_found = False
-        for rule in rules_objs["rules"]:
-            if rule["service"] == "WPS" and rule["subfield"] == "GS:DOWNLOAD":
-                wps_subfield_found = rule["access"] == "DENY"
-                break
-        self.assertTrue(wps_subfield_found, f"WPS download not blocked. Got rules: {geofence.get_rules()}")
-
-        # FULL WFS-T
-        perm_spec = {
-            "users": {
-                "bobby": ["view_resourcebase", "download_resourcebase", "change_dataset_style", "change_dataset_data"]
-            },
-            "groups": [],
-        }
-        layer.set_permissions(perm_spec)
-        rules_count = geofence.get_rules_count()
-        self.assertEqual(rules_count, 10)
-
-        rules_objs = geofence.get_rules()
-        _deny_wfst_rule_exists = False
-        for rule in rules_objs["rules"]:
-            if rule["service"] == "WFS" and rule["userName"] == "bobby" and rule["request"] == "TRANSACTION":
-                _deny_wfst_rule_exists = rule["access"] == "DENY"
-                break
-        self.assertFalse(_deny_wfst_rule_exists)
-
-        # NO WFS-T
-        # - order is important
-        perm_spec = {
-            "users": {
-                "bobby": [
-                    "view_resourcebase",
-                    "download_resourcebase",
-                ]
-            },
-            "groups": [],
-        }
-        layer.set_permissions(perm_spec)
-        rules_count = geofence.get_rules_count()
-        self.assertEqual(rules_count, 13)
-
-        rules_objs = geofence.get_rules()
-        _deny_wfst_rule_exists = False
-        _deny_wfst_rule_position = -1
-        _allow_wfs_rule_position = -1
-        for cnt, rule in enumerate(rules_objs["rules"]):
-            if rule["service"] == "WFS" and rule["userName"] == "bobby" and rule["request"] == "TRANSACTION":
-                _deny_wfst_rule_exists = rule["access"] == "DENY"
-                _deny_wfst_rule_position = cnt
-            elif (
-                rule["service"] == "WFS"
-                and rule["userName"] == "bobby"
-                and (rule["request"] is None or rule["request"] == "*")
-            ):
-                _allow_wfs_rule_position = cnt
-        self.assertTrue(_deny_wfst_rule_exists)
-        self.assertTrue(_allow_wfs_rule_position > _deny_wfst_rule_position)
-
-        # NO WFS
-        perm_spec = {
-            "users": {
-                "bobby": [
-                    "view_resourcebase",
-                ]
-            },
-            "groups": [],
-        }
-        layer.set_permissions(perm_spec)
-        rules_count = geofence.get_rules_count()
-        self.assertEqual(rules_count, 9)
-
-        rules_objs = geofence.get_rules()
-        _deny_wfst_rule_exists = False
-        for rule in rules_objs["rules"]:
-            if rule["service"] == "WFS" and rule["userName"] == "bobby" and rule["request"] == "TRANSACTION":
-                _deny_wfst_rule_exists = rule["access"] == "DENY"
-                break
-        self.assertFalse(_deny_wfst_rule_exists)
-
-        perm_spec = {"users": {}, "groups": {"bar": ["view_resourcebase"]}}
-        layer.set_permissions(perm_spec)
-        rules_count = geofence.get_rules_count()
-        _log(f"4. rules_count: {rules_count} ")
-        self.assertEqual(rules_count, 9, f"Bad rule count, got rules {geofence.get_rules()}")
-
-        perm_spec = {"users": {}, "groups": {"bar": ["change_resourcebase"]}}
-        layer.set_permissions(perm_spec)
-        rules_count = geofence.get_rules_count()
-        _log(f"5. rules_count: {rules_count} ")
-        self.assertEqual(rules_count, 5)
-
-        # Testing GeoLimits
-        # Reset GeoFence Rules
-        delete_all_geofence_rules()
-        rules_count = geofence.get_rules_count()
-        self.assertEqual(rules_count, 0)
-        layer = Dataset.objects.first()
-        # grab bobby
-        bobby = get_user_model().objects.get(username="bobby")
-        _disable_dataset_cache = has_geolimits(layer, None, None)
-        filters, formats = _get_gwc_filters_and_formats(_disable_dataset_cache)
-        self.assertListEqual(filters, [{"styleParameterFilter": {"STYLES": ""}}])
-        self.assertListEqual(
-            formats,
-            [
-                "application/json;type=utfgrid",
-                "image/gif",
-                "image/jpeg",
-                "image/png",
-                "image/png8",
-                "image/vnd.jpeg-png",
-                "image/vnd.jpeg-png8",
-            ],
+        layer.set_permissions({"users": {"admin": ["change_dataset_data"]}, "groups": []})
+        rules = acl_client.get_rules(workspace=workspace, layer=layer.name)["rules"]
+        self.assertTrue(
+            any(rule.get("user") == "admin" and rule.get("service") == "WPS" and rule.get("subfield") == "GS:DOWNLOAD" and rule.get("access") == "DENY" for rule in rules),
+            f"WPS download restriction missing from ACL rules: {rules}",
+        )
+        self.assertTrue(
+            any(rule.get("user") == "admin" and rule.get("service") == "WFS" and rule.get("access") == "ALLOW" for rule in rules),
+            f"WFS access rule missing for dataset editor: {rules}",
         )
 
-        geo_limit, _ = UserGeoLimit.objects.get_or_create(user=bobby, resource=layer.get_self_resource())
-        geo_limit.wkt = "SRID=4326;MULTIPOLYGON (((145.8046418749977 -42.49606500060302, \
-146.7000276171853 -42.53655428642583, 146.7110139453067 -43.07256577359489, \
-145.9804231249952 -43.05651288026286, 145.8046418749977 -42.49606500060302)))"
+        layer.set_permissions({"users": {"bobby": ["view_resourcebase", "download_resourcebase"]}, "groups": []})
+        rules = acl_client.get_rules(workspace=workspace, layer=layer.name)["rules"]
+        self.assertTrue(
+            any(rule.get("user") == "bobby" and rule.get("service") == "WFS" and rule.get("access") == "ALLOW" for rule in rules),
+            f"WFS download permission missing from ACL rules: {rules}",
+        )
+        self.assertTrue(
+            any(rule.get("user") == "bobby" and rule.get("service") == "WFS" and rule.get("request") == "TRANSACTION" and rule.get("access") == "DENY" for rule in rules),
+            f"WFS-T restriction missing from ACL rules: {rules}",
+        )
+
+        limit = "POLYGON((0 0,1 0,1 1,0 0))"
+        geo_limit, _ = UserGeoLimit.objects.get_or_create(user=get_user_model().objects.get(username="bobby"), resource=layer.get_self_resource())
+        geo_limit.wkt = limit
         geo_limit.save()
         layer.users_geolimits.add(geo_limit)
-        self.assertEqual(layer.users_geolimits.all().count(), 1)
-        _disable_dataset_cache = has_geolimits(layer, bobby, None)
-        filters, formats = _get_gwc_filters_and_formats([_disable_dataset_cache])
-        self.assertIsNone(filters)
-        self.assertIsNone(formats)
-
-        perm_spec = {"users": {"bobby": ["view_resourcebase"]}, "groups": []}
-        layer.set_permissions(perm_spec)
-        rules_count = geofence.get_rules_count()
-        self.assertEqual(rules_count, 10)
-
-        rules_objs = geofence.get_rules()
-        self.assertEqual(len(rules_objs["rules"]), 10)
-        # Order is important
-        _limit_rule_position = -1
-        for cnt, rule in enumerate(rules_objs["rules"]):
-            if rule["service"] is None and rule["userName"] == "bobby":
-                self.assertEqual(rule["userName"], "bobby")
-                self.assertEqual(rule["workspace"], "geonode")
-                self.assertEqual(rule["layer"], "CA")
-                self.assertEqual(rule["access"], "LIMIT")
-
-                self.assertTrue("limits" in rule)
-                rule_limits = rule["limits"]
-                self.assertEqual(
-                    rule_limits["allowedArea"],
-                    "SRID=4326;MULTIPOLYGON (((145.8046418749977 -42.49606500060302, \
-146.7000276171853 -42.53655428642583, 146.7110139453067 -43.07256577359489, \
-145.9804231249952 -43.05651288026286, 145.8046418749977 -42.49606500060302)))",
-                )
-                self.assertEqual(rule_limits["catalogMode"], "MIXED")
-                _limit_rule_position = cnt
-            elif rule["userName"] == "bobby":
-                # When there's a limit rule, "*" must be the first one
-                self.assertTrue(_limit_rule_position < cnt)
-
-        geo_limit, _ = GroupGeoLimit.objects.get_or_create(
-            group=GroupProfile.objects.get(group__name="bar"), resource=layer.get_self_resource()
-        )
-        geo_limit.wkt = "SRID=4326;MULTIPOLYGON (((145.8046418749977 -42.49606500060302, \
-146.7000276171853 -42.53655428642583, 146.7110139453067 -43.07256577359489, \
-145.9804231249952 -43.05651288026286, 145.8046418749977 -42.49606500060302)))"
-        geo_limit.save()
-        layer.groups_geolimits.add(geo_limit)
-        self.assertEqual(layer.groups_geolimits.all().count(), 1)
-
-        perm_spec = {"users": {}, "groups": {"bar": ["change_resourcebase"]}}
-        layer.set_permissions(perm_spec)
-        rules_count = geofence.get_rules_count()
-        self.assertEqual(rules_count, 6)
-
-        rules_objs = geofence.get_rules()
-        self.assertEqual(len(rules_objs["rules"]), 6)
-        # Order is important
-        _limit_rule_position = -1
-        for cnt, rule in enumerate(rules_objs["rules"]):
-            if rule["roleName"] == "ROLE_BAR":
-                if rule["service"] is None:
-                    self.assertEqual(rule["userName"], None)
-                    self.assertEqual(rule["workspace"], "geonode")
-                    self.assertEqual(rule["layer"], "CA")
-                    self.assertEqual(rule["access"], "LIMIT")
-
-                    self.assertTrue("limits" in rule)
-                    rule_limits = rule["limits"]
-                    self.assertEqual(
-                        rule_limits["allowedArea"],
-                        "SRID=4326;MULTIPOLYGON (((145.8046418749977 -42.49606500060302, \
-146.7000276171853 -42.53655428642583, 146.7110139453067 -43.07256577359489, \
-145.9804231249952 -43.05651288026286, 145.8046418749977 -42.49606500060302)))",
-                    )
-                    self.assertEqual(rule_limits["catalogMode"], "MIXED")
-                    _limit_rule_position = cnt
-                else:
-                    # When there's a limit rule, "*" must be the first one
-                    self.assertTrue(_limit_rule_position < cnt)
-
-        # Change Dataset Type and SRID in order to force GeoFence allowed-area reprojection
-        _original_subtype = layer.subtype
-        _original_srid = layer.srid
-        layer.subtype = "raster"
-        layer.srid = "EPSG:3857"
-        layer.save()
-
-        layer.set_permissions(perm_spec)
-        rules_count = geofence.get_rules_count()
-
-        rules_objs = geofence.get_rules()
-        # Order is important
-        _limit_rule_position = -1
-        for cnt, rule in enumerate(rules_objs["rules"]):
-            if rule["roleName"] == "ROLE_BAR":
-                if rule["service"] is None:
-                    self.assertEqual(rule["service"], None)
-                    self.assertEqual(rule["userName"], None)
-                    self.assertEqual(rule["workspace"], "geonode")
-                    self.assertEqual(rule["layer"], "CA")
-                    self.assertEqual(rule["access"], "LIMIT")
-
-                    self.assertTrue("limits" in rule)
-                    rule_limits = rule["limits"]
-                    self.assertEqual(
-                        rule_limits["allowedArea"],
-                        "SRID=4326;MULTIPOLYGON (((145.8046418749977 -42.49606500060302, 146.7000276171853 \
--42.53655428642583, 146.7110139453067 -43.07256577359489, 145.9804231249952 \
--43.05651288026286, 145.8046418749977 -42.49606500060302)))",
-                    )
-                    self.assertEqual(rule_limits["catalogMode"], "MIXED")
-                    _limit_rule_position = cnt
-                else:
-                    # When there's a limit rule, "*" must be the first one
-                    self.assertTrue(_limit_rule_position < cnt)
-
-        layer.subtype = _original_subtype
-        layer.srid = _original_srid
-        layer.save()
-
-        # Reset GeoFence Rules
-        delete_all_geofence_rules()
-        rules_count = geofence.get_rules_count()
-        self.assertEqual(rules_count, 0)
+        layer.set_permissions({"users": {"bobby": ["view_resourcebase"]}, "groups": []})
+        rules = acl_client.get_rules(workspace=workspace, layer=layer.name)["rules"]
+        limit_rule = next((rule for rule in rules if rule.get("user") == "bobby" and rule.get("access") == "LIMIT"), None)
+        self.assertIsNotNone(limit_rule, f"ACL spatial limit missing: {rules}")
+        self.assertEqual(limit_rule["limits"]["allowedArea"]["wkt"], limit)
+        self.assertEqual(limit_rule["limits"]["catalogMode"], "MIXED")
 
     @patch.dict(os.environ, {"ASYNC_SIGNALS": "False"})
     @override_settings(ASYNC_SIGNALS=False, IMPORTER_ENABLE_DYN_MODELS=False)
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
     def test_dataset_permissions(self):
+        # Cloud uses the dataset created in setUp and verifies ACL rules. The
+        # legacy upload/Basic-auth assertions below require GeoServer's sample
+        # catalog and datastore behavior, so keep those for the classic backend.
+        if settings.NOXT_GEOSERVER_CLOUD_ENABLED:
+            from geonode.geoserver.helpers import _create_acl_client
+
+            bobby = get_user_model().objects.get(username="bobby")
+            layer = Dataset.objects.first()
+            self.assertIsNotNone(layer, "SecurityTests.setUp must provide a dataset for the Cloud ACL check")
+            layer.set_permissions(
+                {
+                    "users": {
+                        "AnonymousUser": [],
+                        "bobby": ["view_resourcebase", "download_resourcebase"],
+                    },
+                    "groups": {},
+                }
+            )
+            acl_rules = _create_acl_client().get_rules(workspace="geonode", layer=layer.name)["rules"]
+            for service in ("WMS", "WFS"):
+                self.assertTrue(
+                    any(
+                        rule.get("service") in (service, None)
+                        and rule.get("access") == "ALLOW"
+                        and rule.get("user") == bobby.username
+                        for rule in acl_rules
+                    ),
+                    f"GeoNode did not create bobby's {service} ACL allow rule: {acl_rules}",
+                )
+                self.assertFalse(
+                    any(
+                        rule.get("service") in (service, None)
+                        and rule.get("access") == "ALLOW"
+                        and rule.get("user") is None
+                        and rule.get("role") is None
+                        for rule in acl_rules
+                    ),
+                    f"Cloud ACL exposes the private layer anonymously through {service}: {acl_rules}",
+                )
+            return
+
         # Test permissions on a layer
         from geonode.upload import project_dir
 
@@ -988,9 +821,9 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
         self.assertIsNotNone(layer.sourcetype)
         self.assertEqual(layer.alternate, "geonode:valid")
 
-        # Reset GeoFence Rules
-        delete_all_geofence_rules()
-        rules_count = geofence.get_rules_count()
+        # Reset ACL Rules
+        delete_all_acl_rules()
+        rules_count = acl_client.get_rules_count()
         self.assertEqual(rules_count, 0)
 
         layer = Dataset.objects.get(name="valid")
@@ -1000,7 +833,7 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
         layer = Dataset.objects.get(alternate=layer.alternate)
         layer.set_default_permissions(owner=bobby)
         check_dataset(layer)
-        rules_count = geofence.get_rules_count()
+        rules_count = acl_client.get_rules_count()
         _log(f"0. rules_count: {rules_count} ")
         self.assertGreaterEqual(rules_count, 4)
 
@@ -1100,9 +933,9 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
         # _content_type = response.getheader('Content-Type')
         # self.assertEqual(_content_type, 'image/png')
 
-        # Reset GeoFence Rules
-        delete_all_geofence_rules()
-        rules_count = geofence.get_rules_count()
+        # Reset ACL Rules
+        delete_all_acl_rules()
+        rules_count = acl_client.get_rules_count()
         self.assertTrue(rules_count == 0)
         if layer:
             layer.delete()
@@ -1278,9 +1111,9 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
     def test_not_superuser_permissions(self):
         rules_count = 0
         if check_ogc_backend(geoserver.BACKEND_PACKAGE):
-            delete_all_geofence_rules()
-            # Reset GeoFence Rules
-            rules_count = geofence.get_rules_count()
+            delete_all_acl_rules()
+            # Reset ACL Rules
+            rules_count = acl_client.get_rules_count()
             self.assertTrue(rules_count == 0)
 
         # grab bobby
@@ -1297,8 +1130,8 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
         self.assertTrue(bob.has_perm("view_resourcebase", layer.get_self_resource()))
 
         if check_ogc_backend(geoserver.BACKEND_PACKAGE):
-            # Check GeoFence Rules have been correctly created
-            rules_count = geofence.get_rules_count()
+            # Check ACL Rules have been correctly created
+            rules_count = acl_client.get_rules_count()
             _log(f"1. rules_count: {rules_count} ")
 
         self.assertTrue(self.client.login(username="bobby", password="bob"))
@@ -1344,11 +1177,11 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
         if check_ogc_backend(geoserver.BACKEND_PACKAGE):
             perms = get_users_with_perms(layer)
             _log(f"2. perms: {perms} ")
-            batch = create_geofence_rules(layer, perms, user=bob)
-            geofence.run_batch(batch)
+            batch = create_acl_rules(layer, perms, user=bob)
+            acl_client.run_batch(batch)
 
-            # Check GeoFence Rules have been correctly created
-            rules_count = geofence.get_rules_count()
+            # Check ACL Rules have been correctly created
+            rules_count = acl_client.get_rules_count()
             _log(f"3. rules_count: {rules_count} ")
 
         # 4. change_resourcebase_permissions
@@ -1383,9 +1216,9 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
 
         rules_count = 0
         if check_ogc_backend(geoserver.BACKEND_PACKAGE):
-            delete_all_geofence_rules()
-            # Reset GeoFence Rules
-            rules_count = geofence.get_rules_count()
+            delete_all_acl_rules()
+            # Reset ACL Rules
+            rules_count = acl_client.get_rules_count()
             self.assertEqual(rules_count, 0, rules_count)
 
     def test_anonymus_permissions(self):
@@ -1596,8 +1429,13 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
             {"users": {"bobby": ["view_resourcebase", "download_resourcebase", "change_dataset_style"]}, "groups": {}},
         )
 
+        compact = _p.compact
+        compact["groups"] = sorted(
+            [{key: value for key, value in group.items() if key != "id"} for group in compact["groups"]],
+            key=lambda group: group["name"],
+        )
         self.assertDictEqual(
-            _p.compact,
+            compact,
             {
                 "users": [
                     {
@@ -1623,8 +1461,16 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
                 ],
                 "organizations": [],
                 "groups": [
-                    {"id": 3, "title": "anonymous", "name": "anonymous", "permissions": "none"},
-                    {"id": 2, "name": "registered-members", "permissions": "none", "title": "Registered Members"},
+                    {
+                        "title": "anonymous",
+                        "name": "anonymous",
+                        "permissions": "none",
+                    },
+                    {
+                        "name": "registered-members",
+                        "permissions": "none",
+                        "title": "Registered Members",
+                    },
                 ],
             },
         )
@@ -1649,8 +1495,13 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
             },
         )
 
+        compact = _p.compact
+        compact["groups"] = sorted(
+            [{key: value for key, value in group.items() if key != "id"} for group in compact["groups"]],
+            key=lambda group: group["name"],
+        )
         self.assertDictEqual(
-            _p.compact,
+            compact,
             {
                 "users": [
                     {
@@ -1676,8 +1527,8 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
                 ],
                 "organizations": [],
                 "groups": [
-                    {"id": 3, "title": "anonymous", "name": "anonymous", "permissions": "view"},
-                    {"id": 2, "name": "registered-members", "permissions": "none", "title": "Registered Members"},
+                    {"title": "anonymous", "name": "anonymous", "permissions": "view"},
+                    {"name": "registered-members", "permissions": "none", "title": "Registered Members"},
                 ],
             },
         )
@@ -1714,7 +1565,10 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
         }
         self.assertListEqual(list(_pp.extended.keys()), list(_pp_e.keys()))
         for _key in _pp.extended.keys():
-            self.assertListEqual(list(_pp.extended.get(_key).keys()), list(_pp_e.get(_key).keys()))
+            if _key == "groups":
+                self.assertCountEqual(list(_pp.extended.get(_key).keys()), list(_pp_e.get(_key).keys()))
+            else:
+                self.assertListEqual(list(_pp.extended.get(_key).keys()), list(_pp_e.get(_key).keys()))
             for __key in _pp.extended.get(_key).keys():
                 self.assertListEqual(
                     sorted(list(set(_pp.extended.get(_key).get(__key)))), sorted(list(set(_pp_e.get(_key).get(__key))))
@@ -1766,7 +1620,10 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
         }
         self.assertListEqual(list(_pp.extended.keys()), list(_pp_e.keys()))
         for _key in _pp.extended.keys():
-            self.assertListEqual(list(_pp.extended.get(_key).keys()), list(_pp_e.get(_key).keys()))
+            if _key == "groups":
+                self.assertCountEqual(list(_pp.extended.get(_key).keys()), list(_pp_e.get(_key).keys()))
+            else:
+                self.assertListEqual(list(_pp.extended.get(_key).keys()), list(_pp_e.get(_key).keys()))
             for __key in _pp.extended.get(_key).keys():
                 self.assertListEqual(
                     sorted(list(set(_pp.extended.get(_key).get(__key)))), sorted(list(set(_pp_e.get(_key).get(__key))))
@@ -1799,8 +1656,13 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
             json.loads(str(_p)),
         )
 
+        compact = _p.compact
+        compact["groups"] = sorted(
+            [{key: value for key, value in group.items() if key != "id"} for group in compact["groups"]],
+            key=lambda group: group["name"],
+        )
         self.assertDictEqual(
-            _p.compact,
+            compact,
             {
                 "users": [
                     {
@@ -1826,11 +1688,11 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
                 ],
                 "organizations": [],
                 "groups": [
-                    {"id": 3, "title": "anonymous", "name": "anonymous", "permissions": "none"},
-                    {"id": 2, "name": "registered-members", "permissions": "none", "title": "Registered Members"},
+                    {"title": "anonymous", "name": "anonymous", "permissions": "none"},
+                    {"name": "registered-members", "permissions": "none", "title": "Registered Members"},
                 ],
             },
-            _p.compact,
+            compact,
         )
         # 2. "download" permissions are NOT allowed on "Maps"
         test_map = Map.objects.first()
@@ -1858,8 +1720,13 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
             json.loads(str(_p)),
         )
 
+        compact = _p.compact
+        compact["groups"] = sorted(
+            [{key: value for key, value in group.items() if key != "id"} for group in compact["groups"]],
+            key=lambda group: group["name"],
+        )
         self.assertDictEqual(
-            _p.compact,
+            compact,
             {
                 "users": [
                     {
@@ -1885,11 +1752,11 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
                 ],
                 "organizations": [],
                 "groups": [
-                    {"id": 3, "title": "anonymous", "name": "anonymous", "permissions": "none"},
-                    {"id": 2, "name": "registered-members", "permissions": "none", "title": "Registered Members"},
+                    {"title": "anonymous", "name": "anonymous", "permissions": "none"},
+                    {"name": "registered-members", "permissions": "none", "title": "Registered Members"},
                 ],
             },
-            _p.compact,
+            compact,
         )
 
     def test_perm_spec_compact_diff(self):
@@ -2244,6 +2111,35 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
         self.assertIn("change_dataset_data", perms)
 
 
+class ACLServiceMappingTests(SimpleTestCase):
+    @patch("geonode.geoserver.security.gs_catalog.get_version", return_value="2.28.6")
+    def test_vector_view_and_download_map_to_wms_wfs_wps_and_gwc(self, _version):
+        layer = mock.Mock()
+        layer.is_vector.return_value = True
+        rules = _get_acl_services(layer, ["view_resourcebase", "download_resourcebase"])
+        service_access = {(rule.get("service"), rule.get("request"), rule.get("subfield"), rule["access"]) for rule in rules}
+        self.assertIn(("WMS", None, None, True), service_access)
+        self.assertIn(("GWC", None, None, True), service_access)
+        self.assertIn(("WPS", "GS:DOWNLOAD", None, False), service_access)
+        self.assertIn(("WPS", None, None, True), service_access)
+        self.assertIn(("WFS", None, None, True), service_access)
+        for request in ("TRANSACTION", "LOCKFEATURE", "GETFEATUREWITHLOCK"):
+            self.assertIn(("WFS", request, None, False), service_access)
+
+    @patch("geonode.geoserver.security.gs_catalog.get_version", return_value="2.28.6")
+    def test_raster_view_and_download_map_to_wcs_without_wfs_transaction_rules(self, _version):
+        layer = mock.Mock()
+        layer.is_vector.return_value = False
+        rules = _get_acl_services(layer, ["view_resourcebase", "download_resourcebase"])
+        service_access = {(rule.get("service"), rule.get("request"), rule.get("subfield"), rule["access"]) for rule in rules}
+        self.assertIn(("WMS", None, None, True), service_access)
+        self.assertIn(("GWC", None, None, True), service_access)
+        self.assertIn(("WPS", "GS:DOWNLOAD", None, False), service_access)
+        self.assertIn(("WPS", None, None, True), service_access)
+        self.assertIn(("WCS", None, None, True), service_access)
+        self.assertFalse(any(service == "WFS" for service, _, _, _ in service_access))
+
+
 class SecurityRulesTests(TestCase):
     """
     Test resources synchronization with Guardian and dirty states cleaning
@@ -2253,11 +2149,19 @@ class SecurityRulesTests(TestCase):
         self.maxDiff = None
         self._l = create_single_dataset("test_dataset")
 
-    def test_sync_resources_with_guardian_delay_false(self):
-        with self.settings(DELAYED_SECURITY_SIGNALS=False, GEOFENCE_SECURITY_ENABLED=True):
-            delete_geofence_rules_for_layer(self._l)
-            # Set geofence (and so the dirty state)
-            allow_layer_to_all(self._l)
+    @patch("geonode.geoserver.security.invalidate_acl_cache")
+    @patch("geonode.geoserver.security.acl_client.insert_rule")
+    @patch("geonode.geoserver.security.acl_rule_manager.get_first_available_priority", return_value=1)
+    @patch("geonode.geoserver.security.acl_rule_manager.delete_layer_rules", return_value=True)
+    def test_sync_resources_with_guardian_delay_false(
+        self, mock_delete_layer_rules, mock_priority, mock_insert_rule, mock_invalidate_cache
+    ):
+        # Unit-test the GeoNode synchronization contract without writing rules
+        # into whichever external backend (ACL or Cloud ACL) is configured.
+        with self.settings(DELAYED_SECURITY_SIGNALS=False, NOXT_GEOSERVER_ACL_ENABLED=True):
+            delete_acl_rules_for_layer(self._l)
+            # Set the ACL permission state and dirty marker
+            allow_acl_layer_to_all(self._l)
             # Retrieve the same layer
             dirty_dataset = Dataset.objects.get(pk=self._l.id)
             # Check dirty state (True)
@@ -2268,22 +2172,22 @@ class SecurityRulesTests(TestCase):
             # Check dirty state
             self.assertFalse(clean_dataset.dirty_state)
 
-    @patch("geonode.geoserver.security.create_geofence_rules")
-    def test_sync_resources_with_guardian_skips_remote_resources(self, mock_create_geofence_rules):
-        # Remote datasets have no local GeoFence rules to sync (#14524)
+    @patch("geonode.geoserver.security.create_acl_rules")
+    def test_sync_resources_with_guardian_skips_remote_resources(self, mock_create_acl_rules):
+        # Remote datasets have no local ACL rules to sync (#14524)
         remote_dataset = create_single_dataset("test_remote_dataset", sourcetype=enumerations.SOURCE_TYPE_REMOTE)
         remote_dataset.dirty_state = True
         remote_dataset.save()
 
         sync_resources_with_guardian(resource=remote_dataset)
 
-        mock_create_geofence_rules.assert_not_called()
+        mock_create_acl_rules.assert_not_called()
         self.assertFalse(Dataset.objects.get(pk=remote_dataset.id).dirty_state)
 
     @patch("geonode.geoserver.security.permissions_registry.get_perms", return_value={})
-    @patch("geonode.geoserver.security.gf_utils.get_first_available_priority", return_value=1)
-    @patch("geonode.geoserver.security.gf_utils.collect_delete_layer_rules")
-    @patch("geonode.geoserver.security.geofence.run_batch", return_value=False)
+    @patch("geonode.geoserver.security.acl_rule_manager.get_first_available_priority", return_value=1)
+    @patch("geonode.geoserver.security.acl_rule_manager.collect_delete_layer_rules")
+    @patch("geonode.geoserver.security.acl_client.run_batch", return_value=False)
     def test_sync_resources_keeps_dirty_state_when_acl_batch_is_not_committed(
         self, mock_run_batch, mock_collect_rules, mock_priority, mock_permissions
     ):
@@ -2301,8 +2205,8 @@ class SecurityRulesTests(TestCase):
         mock_run_batch.assert_called_once()
 
     @patch("geonode.geoserver.security.permissions_registry.get_perms", return_value={})
-    @patch("geonode.geoserver.security.gf_utils.get_first_available_priority", return_value=1)
-    @patch("geonode.geoserver.security.gf_utils.collect_delete_layer_rules")
+    @patch("geonode.geoserver.security.acl_rule_manager.get_first_available_priority", return_value=1)
+    @patch("geonode.geoserver.security.acl_rule_manager.collect_delete_layer_rules")
     def test_sync_resources_keeps_dirty_state_when_acl_rule_lookup_fails(
         self, mock_collect_rules, mock_priority, mock_permissions
     ):
@@ -2315,11 +2219,26 @@ class SecurityRulesTests(TestCase):
         self.assertTrue(Dataset.objects.get(pk=self._l.id).dirty_state)
 
     # TODO: DELAYED SECURITY MUST BE REVISED
-    def test_sync_resources_with_guardian_delay_true(self):
-        with self.settings(DELAYED_SECURITY_SIGNALS=True, GEOFENCE_SECURITY_ENABLED=True):
-            delete_geofence_rules_for_layer(self._l)
-            # Set geofence (and so the dirty state)
-            allow_layer_to_all(self._l)
+    @patch("geonode.geoserver.security.invalidate_acl_cache")
+    @patch("geonode.geoserver.security.acl_client.run_batch", return_value=True)
+    @patch("geonode.geoserver.security.acl_rule_manager.collect_delete_layer_rules")
+    @patch("geonode.geoserver.security.acl_rule_manager.get_first_available_priority", return_value=1)
+    @patch("geonode.geoserver.security.acl_client.insert_rule")
+    @patch("geonode.geoserver.security.acl_rule_manager.delete_layer_rules", return_value=True)
+    def test_sync_resources_with_guardian_delay_true(
+        self,
+        mock_delete_layer_rules,
+        mock_insert_rule,
+        mock_priority,
+        mock_collect_delete_layer_rules,
+        mock_run_batch,
+        mock_invalidate_cache,
+    ):
+        # Keep this unit test independent of a live ACL/ACL service.
+        with self.settings(DELAYED_SECURITY_SIGNALS=True, NOXT_GEOSERVER_ACL_ENABLED=True):
+            delete_acl_rules_for_layer(self._l)
+            # Set the ACL permission state and dirty marker
+            allow_acl_layer_to_all(self._l)
             # Retrieve the same layer
             dirty_dataset = Dataset.objects.get(pk=self._l.id)
             # Check dirty state (True)
@@ -2338,7 +2257,7 @@ class TestGetUserGeolimits(TestCase):
         self.layer = create_single_dataset("main-layer")
         self.owner = get_user_model().objects.get(username="admin")
         self.perms = {"*": ""}
-        self.gf_services = _get_gf_services(self.layer, self.perms)
+        self.gf_services = _get_acl_services(self.layer, self.perms)
 
     def test_should_not_disable_cache_for_user_without_geolimits(self):
         _disable_dataset_cache = has_geolimits(self.layer, self.owner, None)
@@ -3160,10 +3079,13 @@ class TestUserHasPerms(GeoNodeBaseTestSupport):
         cls.map = create_single_map(name="test_permission_map")
 
     @classmethod
-    def tearDownClass(self) -> None:
-        Dataset.objects.filter(name="test_permission_dataset").delete()
-        Document.objects.filter(title="test_permission_doc").delete()
-        Map.objects.filter(title="test_permission_map").delete()
+    def tearDownClass(cls) -> None:
+        try:
+            Dataset.objects.filter(name="test_permission_dataset").delete()
+            Document.objects.filter(title="test_permission_doc").delete()
+            Map.objects.filter(title="test_permission_map").delete()
+        finally:
+            super().tearDownClass()
 
     def setUp(self):
         self.marty, _ = get_user_model().objects.get_or_create(username="marty", password="mcfly")

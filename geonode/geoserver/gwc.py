@@ -31,6 +31,13 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 
+def noxt_get_default_gridsets():
+    """Return the gridsets advertised by this branch's GeoServer Cloud GWC."""
+    # The configured Cloud GWC advertises these gridsets. Do not assign
+    # WebMercatorQuad or x2 variants unless they are explicitly configured.
+    return ("EPSG:4326", "EPSG:900913")
+
+
 class GWCClient:
     """
     A GeoWebCache REST client for interacting with the GWC API.

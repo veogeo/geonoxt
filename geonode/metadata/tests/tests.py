@@ -406,7 +406,7 @@ class MetadataApiTests(APITestCase):
 
     # Tests for Profile autocomplete
 
-    @patch("geonode.people.utils.get_available_users")
+    @patch("geonode.metadata.api.views.get_available_users")
     def test_profile_autocomplete_no_query(self, mock_get_available_users):
         """
         Test that the queryset is restricted to available users
@@ -430,7 +430,7 @@ class MetadataApiTests(APITestCase):
         self.assertEqual(results[0]["label"], "user_1")
         self.assertEqual(results[1]["label"], "user_2")
 
-    @patch("geonode.people.utils.get_available_users")
+    @patch("geonode.metadata.api.views.get_available_users")
     def test_profile_autocomplete_with_query(self, mock_get_available_users):
         """
         Test that the queryset is restricted to one user
@@ -453,7 +453,7 @@ class MetadataApiTests(APITestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["label"], "user_2")
 
-    @patch("geonode.people.utils.get_available_users")
+    @patch("geonode.metadata.api.views.get_available_users")
     def test_profile_autocomplete_no_match(self, mock_get_available_users):
         """
         Test when there is no match of available users

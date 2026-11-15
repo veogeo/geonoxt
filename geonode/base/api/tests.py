@@ -37,6 +37,7 @@ from urllib.parse import urljoin
 from datetime import date, timedelta
 
 from django.urls import reverse
+from slugify import slugify
 from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.contrib.auth import get_user_model
@@ -62,7 +63,7 @@ from geonode.assets.utils import get_default_asset
 from geonode.assets.handlers import asset_handler_registry
 
 from geonode.base import enumerations
-from geonode.base.api.serializers import ResourceBaseSerializer
+from geonode.base.api.serializers import LinksSerializer, ResourceBaseSerializer
 from geonode.groups.models import GroupMember, GroupProfile
 from geonode.layers.utils import get_files
 from geonode.base.models import (
@@ -74,6 +75,7 @@ from geonode.base.models import (
     RestrictionCodeType,
     License,
     Group,
+    Link,
     LinkedResource,
 )
 
@@ -841,15 +843,15 @@ class BaseApiTests(APITestCase):
                     },
                     {
                         "name": "",
-                        "slug": "http-localhost-8000-thesaurus-no-about-thesauro-38",
-                        "uri": "http://localhost:8000//thesaurus/no-about-thesauro#38",
+                        "slug": slugify(f"{settings.SITEURL}/thesaurus/no-about-thesauro#38"),
+                        "uri": f"{settings.SITEURL}/thesaurus/no-about-thesauro#38",
                         "thesaurus": {"name": "Thesauro without the about", "slug": "no-about-thesauro", "uri": ""},
                         "i18n": {},
                     },
                     {
                         "name": "bar_keyword",
-                        "slug": "http-localhost-8000-thesaurus-no-about-thesauro-bar-keyword",
-                        "uri": "http://localhost:8000//thesaurus/no-about-thesauro#bar_keyword",
+                        "slug": slugify(f"{settings.SITEURL}/thesaurus/no-about-thesauro#bar_keyword"),
+                        "uri": f"{settings.SITEURL}/thesaurus/no-about-thesauro#bar_keyword",
                         "thesaurus": {"name": "Thesauro without the about", "slug": "no-about-thesauro", "uri": ""},
                         "i18n": {},
                     },
@@ -3491,6 +3493,30 @@ class BaseApiTests(APITestCase):
                         self.assertIn("linked_resources", json, "Missing content")
                     else:
                         self.assertNotIn("linked_resources", json, "Unexpected content")
+
+    @override_settings(
+        NOXT_GEOSERVER_CLOUD_ENABLED=True,
+        OGC_SERVER={"default": {"PUBLIC_LOCATION": "http://localhost/geoserver/"}},
+    )
+    def test_cloud_wfs_links_use_explicit_gateway_route(self):
+        dataset = Dataset.objects.first()
+        link = Link.objects.create(
+            resource=dataset.resourcebase_ptr,
+            extension="html",
+            link_type="OGC:WFS",
+            name="WFS test route",
+            mime="text/html",
+            url="http://localhost/geoserver/ows?service=WFS&version=1.1.0",
+        )
+
+        payload = LinksSerializer().to_representation(dataset.pk)
+        wfs_link = next(item for item in payload if item["name"] == link.name)
+
+        self.assertEqual(
+            wfs_link["url"],
+            "http://localhost/geoserver/wfs?service=WFS&version=1.1.0",
+        )
+        self.assertEqual(link.url, "http://localhost/geoserver/ows?service=WFS&version=1.1.0")
 
     def test_exclude_all_but_one(self):
         dataset = Dataset.objects.first()

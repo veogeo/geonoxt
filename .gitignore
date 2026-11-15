@@ -97,4 +97,5 @@ scripts/spcgeonode/_volume_*
 !hooks/*
 
 .env
+/.env.geoserver-cloud
 

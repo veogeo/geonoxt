@@ -16,6 +16,7 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
+from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
 from oauth2_provider.models import AccessToken
 from tastypie.authentication import Authentication
@@ -47,7 +48,17 @@ class OAuthAuthentication(Authentication):
         authenticated = False
         if "HTTP_AUTHORIZATION" in request.META:
             auth_header = self.extract_auth_header(request)
-            if auth_header:
+            if auth_header and getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+                parts = auth_header.split()
+                if len(parts) == 2 and parts[0].lower() == "bearer":
+                    from geonode.base.oauth import authenticate_cloud_access_token
+
+                    try:
+                        user, _claims = authenticate_cloud_access_token(parts[1])
+                        authenticated = True
+                    except Exception:
+                        pass
+            elif auth_header:
                 access_token = get_token_from_auth_header(auth_header)
                 if self.token_is_valid(access_token):
                     obj = AccessToken.objects.get(token=access_token)

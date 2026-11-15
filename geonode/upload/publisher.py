@@ -21,7 +21,7 @@ import os
 from typing import List
 
 from geonode import settings
-from geonode.geoserver.helpers import create_geoserver_db_featurestore
+from geonode.geoserver.helpers import create_geoserver_db_featurestore, noxt_create_workspace
 from geoserver.catalog import Catalog
 from geonode.utils import OGC_Servers_Handler
 from django.utils.module_loading import import_string
@@ -178,7 +178,7 @@ class DataPublisher:
         workspace = self.cat.get_workspace(name)
         if workspace is None and create:
             uri = f"http://www.geonode.org/{name}"
-            workspace = self.cat.create_workspace(name, uri)
+            workspace = noxt_create_workspace(self.cat, name, uri)
         return workspace
 
     def recalculate_geoserver_featuretype(self, dataset):

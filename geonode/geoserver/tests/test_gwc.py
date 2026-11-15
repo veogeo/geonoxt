@@ -17,14 +17,44 @@
 #
 #########################################################################
 
-from unittest.mock import patch, MagicMock
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
+from django.test import override_settings
 
 from geoserver.catalog import FailedRequestError
-from geonode.geoserver.gwc import GWCClient
+from geonode.geoserver.gwc import GWCClient, noxt_get_default_gridsets
+from geonode.geoserver.management.commands.gwc_subcommands.create import CreateTileLayers
 
+
+class NoxtCloudGWCConfigTest(TestCase):
+    def test_default_gridsets_match_cloud_catalog(self):
+        with override_settings(NOXT_GEOSERVER_CLOUD_ENABLED=True):
+            self.assertEqual(noxt_get_default_gridsets(), ("EPSG:4326", "EPSG:900913"))
+
+    def test_gridsets_are_cloud_only_even_without_legacy_flag(self):
+        with override_settings(NOXT_GEOSERVER_CLOUD_ENABLED=False):
+            self.assertEqual(noxt_get_default_gridsets(), ("EPSG:4326", "EPSG:900913"))
+
+
+    def test_noxt_gwc_create_template_uses_cloud_gridsets(self):
+        with override_settings(NOXT_GEOSERVER_CLOUD_ENABLED=True):
+            root = CreateTileLayers().load_xml_template()
+
+        assert [node.text for node in root.findall(".//gridSetName")] == [
+            "EPSG:4326",
+            "EPSG:900913",
+        ]
+
+
+    def test_noxt_cloud_gwc_deployment_enables_data_security(self):
+        config_path = Path(__file__).resolve().parents[3] / "docker" / "geoserver-cloud-gwc-gs.xml"
+        root = ET.parse(config_path).getroot()
+
+        assert root.findtext("securityEnabled") == "true"
 
 class GWCClientTest(TestCase):
 

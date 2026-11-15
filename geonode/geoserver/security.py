@@ -33,8 +33,8 @@ from guardian.shortcuts import get_anonymous_user
 from django.conf import settings
 from django.contrib.auth.models import Group
 from django.contrib.auth import get_user_model
-from geonode.geoserver.geofence import Batch, Rule, AutoPriorityBatch
-from geonode.geoserver.helpers import geofence, gf_utils, gs_catalog
+from geonode.geoserver.acl_rules import Noxt_ACLRuleBatch, Noxt_ACLRule, Noxt_ACLAutoPriorityBatch
+from geonode.geoserver.helpers import acl_client, acl_rule_manager, gs_catalog
 from geonode.groups.models import GroupProfile
 from geonode.utils import get_dataset_workspace
 from geonode.resource.utils import is_remote_resource
@@ -43,20 +43,20 @@ from geonode.security.registry import permissions_registry
 logger = logging.getLogger(__name__)
 
 
-def delete_all_geofence_rules():
-    """purge all existing GeoFence Rules"""
+def delete_all_acl_rules():
+    """purge all ACL rules"""
     if settings.GEOSERVER_SECURITY_ENABLED or getattr(
-        settings, "GEOFENCE_SECURITY_ENABLED", False
+        settings, "NOXT_GEOSERVER_ACL_ENABLED", False
     ):
-        gf_utils.delete_all_rules()
+        acl_rule_manager.delete_all_rules()
 
 
-def delete_geofence_rules_for_layer(instance):
+def delete_acl_rules_for_layer(instance):
     """Delete all rules for a given layer
-    This function wraps the gf_util method, since it doesn't know about Dataset model
+    This function resolves the ACL identity for a Dataset, since it doesn't know about Dataset model
     """
     if settings.GEOSERVER_SECURITY_ENABLED or getattr(
-        settings, "GEOFENCE_SECURITY_ENABLED", False
+        settings, "NOXT_GEOSERVER_ACL_ENABLED", False
     ):
         resource = instance.get_self_resource()
         workspace_name = get_dataset_workspace(resource.dataset)
@@ -66,14 +66,14 @@ def delete_geofence_rules_for_layer(instance):
             else resource.dataset.alternate
         )
         logger.debug(f"Removing rules for layer {workspace_name}:{layer_name}")
-        gf_utils.delete_layer_rules(workspace_name, layer_name)
+        acl_rule_manager.delete_layer_rules(workspace_name, layer_name)
 
 
-def invalidate_geofence_cache():
-    """invalidate GeoFence Cache Rules"""
+def invalidate_acl_cache():
+    """invalidate ACL cache"""
     if settings.GEOSERVER_SECURITY_ENABLED:
         try:
-            geofence.invalidate_cache()
+            acl_client.invalidate_cache()
             return True
         except Exception:
             tb = traceback.format_exc()
@@ -199,7 +199,7 @@ def delete_dataset_cache(dataset_name):
 
 
 def set_geowebcache_invalidate_cache(dataset_alternate, cat=None):
-    """invalidate GeoWebCache Cache Rules"""
+    """invalidate GeoWebCache Cache ACL rules"""
     if dataset_alternate is not None and len(dataset_alternate) and "None" not in dataset_alternate:
         try:
             if cat is None or cat.get_layer(dataset_alternate) is not None:
@@ -227,7 +227,7 @@ def set_geowebcache_invalidate_cache(dataset_alternate, cat=None):
             logger.debug(tb)
 
 
-def allow_layer_to_all(instance):
+def allow_acl_layer_to_all(instance):
     """assign access permissions to all users
 
     This method is only relevant to Dataset instances that have their
@@ -239,30 +239,30 @@ def allow_layer_to_all(instance):
 
     """
     resource = instance.get_self_resource()
-    logger.debug(f"Inside allow_layer_to_all for instance {instance}")
+    logger.debug(f"Inside allow_acl_layer_to_all for instance {instance}")
     workspace = get_dataset_workspace(resource.dataset)
     dataset_name = (
         resource.dataset.name if resource.dataset and hasattr(resource.dataset, "name") else resource.dataset.alternate
     )
     logger.debug(f"Allowing {workspace}:{dataset_name} access to everybody")
     try:
-        priority = gf_utils.get_first_available_priority()
-        geofence.insert_rule(Rule(Rule.ALLOW, priority=priority, workspace=workspace, layer=dataset_name))
+        priority = acl_rule_manager.get_first_available_priority()
+        acl_client.insert_rule(Noxt_ACLRule(Noxt_ACLRule.ALLOW, priority=priority, workspace=workspace, layer=dataset_name))
     except Exception as e:
         tb = traceback.format_exc()
         logger.debug(tb)
-        raise RuntimeError(f"Could not ADD GeoServer ANONYMOUS Rule for Dataset {dataset_name}: {e}")
+        raise RuntimeError(f"Could not ADD GeoServer ANONYMOUS ACL rule for Dataset {dataset_name}: {e}")
     finally:
         if not getattr(settings, "DELAYED_SECURITY_SIGNALS", False):
-            invalidate_geofence_cache()
+            invalidate_acl_cache()
         else:
             resource.set_dirty_state()
 
 
-# def sync_geofence_with_guardian(dataset, perms, user=None, group=None, group_perms=None):
-def create_geofence_rules(layer, perms, user=None, group=None, batch: Batch = None):
+# def sync_acl_client_with_guardian(dataset, perms, user=None, group=None, group_perms=None):
+def create_acl_rules(layer, perms, user=None, group=None, batch: Noxt_ACLRuleBatch = None):
     """
-    Collect GeoFence rules related to passed perms into a Batch.
+    Collect ACL rules related to passed perms into an ACL batch.
     If the batch does not exist, it is created and returned.
     """
     if user and group:
@@ -271,7 +271,7 @@ def create_geofence_rules(layer, perms, user=None, group=None, batch: Batch = No
     layer_name = layer.name if layer and hasattr(layer, "name") else layer.alternate
     workspace_name = get_dataset_workspace(layer)
     # Create new rule-set
-    gf_services = _get_gf_services(layer, perms)
+    acl_services = _get_acl_services(layer, perms)
 
     username = (user if isinstance(user, str) else user.username) if user else None
     groupname = (group if isinstance(group, str) else group.name) if group else None
@@ -279,7 +279,7 @@ def create_geofence_rules(layer, perms, user=None, group=None, batch: Batch = No
     users_geolimits, groups_geolimits, anonymous_geolimits = get_geolimits(layer, username, groupname)
 
     if not batch:
-        batch = AutoPriorityBatch(gf_utils.get_first_available_priority(), f"Sync {workspace_name}:{layer_name}")
+        batch = Noxt_ACLAutoPriorityBatch(acl_rule_manager.get_first_available_priority(), f"Sync {workspace_name}:{layer_name}")
 
     # Set global geolimits
     # Anon limits should go at the end, but it's responsibility of the caller to create first user/group rules
@@ -289,33 +289,33 @@ def create_geofence_rules(layer, perms, user=None, group=None, batch: Batch = No
         (anonymous_geolimits, "ANON", None, None),
     ):
         if limits and limits.exists():
-            logger.debug(f"Adding GeoFence {scope} GeoLimit rule: U:{u} G:{g} L:{layer} ")
+            logger.debug(f"Adding ACL {scope} GeoLimit rule: U:{u} G:{g} L:{layer} ")
             wkt = limits.last().wkt
             batch.add_insert_rule(
-                Rule(
-                    Rule.LIMIT,
+                Noxt_ACLRule(
+                    Noxt_ACLRule.LIMIT,
                     workspace=workspace_name,
                     layer=layer_name,
                     user=u,
                     group=g,
                     geo_limit=wkt,
-                    catalog_mode=Rule.CM_MIXED,
+                    catalog_mode=Noxt_ACLRule.CM_MIXED,
                 )
             )
 
     if username:
-        msg = "Adding GeoFence USER rules: U:{username} S:{service} L:{layer} "
+        msg = "Adding ACL USER rules: U:{username} S:{service} L:{layer} "
     elif not groupname:
-        msg = "Adding GeoFence ANON rules: S:{service} L:{layer} "
+        msg = "Adding ACL ANON rules: S:{service} L:{layer} "
     if groupname:
-        msg = "Adding GeoFence GROUP rules: G:{groupname} S:{service} L:{layer} "
+        msg = "Adding ACL GROUP rules: G:{groupname} S:{service} L:{layer} "
 
     # Set services rules
-    for rule_fields in gf_services:
+    for rule_fields in acl_services:
         if layer and layer_name:
             logger.debug(msg.format(username=username, groupname=groupname, layer=layer_name, **rule_fields))
             batch.add_insert_rule(
-                Rule(
+                Noxt_ACLRule(
                     user=username,
                     group=groupname,
                     workspace=workspace_name,
@@ -348,38 +348,38 @@ def sync_resources_with_guardian(resource=None, force=False):
 
         for dataset in datasets:
             if is_remote_resource(dataset):
-                # No local GeoFence rules to sync: the data lives on the remote service.
+                # No local ACL rules to sync: the data lives on the remote service.
                 dataset.clear_dirty_state()
                 continue
             try:
-                batch = AutoPriorityBatch(gf_utils.get_first_available_priority(), f"Sync resources {dataset}")
+                batch = Noxt_ACLAutoPriorityBatch(acl_rule_manager.get_first_available_priority(), f"Sync resources {dataset}")
 
-                gf_utils.collect_delete_layer_rules(get_dataset_workspace(dataset), dataset.name, batch)
+                acl_rule_manager.collect_delete_layer_rules(get_dataset_workspace(dataset), dataset.name, batch)
                 perm_spec = permissions_registry.get_perms(instance=dataset)
                 # All the other users
                 if "users" in perm_spec:
                     for user, perms in perm_spec["users"].items():
                         user = get_user_model().objects.get(username=user)
-                        # Set the GeoFence User Rules
-                        geofence_user = str(user)
-                        if "AnonymousUser" in geofence_user or str(get_anonymous_user()) in geofence_user:
-                            geofence_user = None
-                        create_geofence_rules(dataset, perms, user=geofence_user, batch=batch)
+                        # Set the ACL User ACL rules
+                        acl_client_user = str(user)
+                        if "AnonymousUser" in acl_client_user or str(get_anonymous_user()) in acl_client_user:
+                            acl_client_user = None
+                        create_acl_rules(dataset, perms, user=acl_client_user, batch=batch)
                 # All the other groups
                 if "groups" in perm_spec:
                     for group, perms in perm_spec["groups"].items():
                         group = Group.objects.get(name=group)
                         if group and group.name and group.name == "anonymous":
                             group = None
-                        # Set the GeoFence Group Rules
-                        create_geofence_rules(dataset, perms, group=group, batch=batch)
+                        # Set the ACL Group ACL rules
+                        create_acl_rules(dataset, perms, group=group, batch=batch)
 
-                logger.info(f"Going to synch permissions in GeoFence for resource {dataset}")
+                logger.info(f"Going to synch permissions in ACL for resource {dataset}")
                 # An empty batch is a successful no-op. For a non-empty batch,
                 # only clear the dirty marker after the backend confirms it
                 # committed; the ACL REST adapter can fail partway through its
                 # non-transactional delete/insert sequence.
-                rules_committed = batch.length() == 0 or geofence.run_batch(batch)
+                rules_committed = batch.length() == 0 or acl_client.run_batch(batch)
                 if rules_committed:
                     dataset.clear_dirty_state()
                 else:
@@ -387,12 +387,12 @@ def sync_resources_with_guardian(resource=None, force=False):
                     failed_datasets.append(str(dataset))
             except Exception as e:
                 logger.exception(e)
-                logger.warning(f"!WARNING! - Failure Synching-up Security Rules for Resource [{dataset}]")
+                logger.warning(f"!WARNING! - Failure Synching-up Security ACL rules for Resource [{dataset}]")
                 dataset.set_dirty_state()
                 failed_datasets.append(str(dataset))
 
         if rules_committed:
-            invalidate_geofence_cache()
+            invalidate_acl_cache()
 
         if force and failed_datasets:
             failed = ", ".join(failed_datasets)
@@ -437,38 +437,38 @@ def has_geolimits(layer, user, group):
         return anonymous_geolimits.exists()
 
 
-def _get_gf_services(layer, perms):
+def _get_acl_services(layer, perms):
     edit = "change_dataset_data" in perms
     download = "download_resourcebase" in perms
     view = "view_resourcebase" in perms
 
-    gf_services = []
+    acl_services = []
 
     # view services
     if view or "change_dataset_style" in perms:
-        gf_services.append({"service": "WMS", "access": True})
-        gf_services.append({"service": "GWC", "access": True})
+        acl_services.append({"service": "WMS", "access": True})
+        acl_services.append({"service": "GWC", "access": True})
 
     # WPS
     if view or download or edit:
         if not download:
             if geoserver_allows_wps_rules(gs_catalog.get_version()):
-                gf_services.append({"service": "WPS", "subfield": "GS:DOWNLOAD", "access": False})
-        gf_services.append({"service": "WPS", "access": True})
+                acl_services.append({"service": "WPS", "subfield": "GS:DOWNLOAD", "access": False})
+        acl_services.append({"service": "WPS", "access": True})
 
     if download and not edit and layer.is_vector():
         for request in ("TRANSACTION", "LOCKFEATURE", "GETFEATUREWITHLOCK"):
-            gf_services.append({"service": "WFS", "request": request, "access": False})
+            acl_services.append({"service": "WFS", "request": request, "access": False})
 
     if download or edit:
         service = "WFS" if layer.is_vector() else "WCS"
-        gf_services.append({"service": service, "access": True})
+        acl_services.append({"service": service, "access": True})
 
     # TODO: check if this rule is really needed
     if download and (view or edit):
-        gf_services.append({"service": "*", "access": True})
+        acl_services.append({"service": "*", "access": True})
 
-    return gf_services
+    return acl_services
 
 
 def geoserver_allows_wps_rules(ver: str) -> bool:

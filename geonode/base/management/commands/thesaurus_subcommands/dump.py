@@ -159,7 +159,7 @@ def dump_thesaurus_rdflib(thesaurus: Thesaurus, tk_qs: QuerySet, fmt: str, defau
     out = g.serialize(format=fmt, destination=output_file)
 
     if output_file is None:
-        sys.stdouterr.write(out)
+        sys.stdout.write(out)
 
     sys.stderr.write(f"Thesaurus '{thesaurus.identifier}' exported\n")
     sys.stderr.write(f"- Keywords exported: {cnt_k}\n")

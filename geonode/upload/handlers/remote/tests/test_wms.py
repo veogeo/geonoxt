@@ -17,7 +17,8 @@
 #
 #########################################################################
 from collections import namedtuple
-from urllib.parse import ParseResult
+from urllib.parse import ParseResult, urlsplit
+from django.conf import settings
 from django.test import TestCase, override_settings
 from mock import MagicMock, patch
 from geonode.upload.api.exceptions import ImportException
@@ -42,7 +43,9 @@ class TestRemoteWMSResourceHandler(TestCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.handler = RemoteWMSResourceHandler()
-        cls.valid_url = "http://geoserver:8080/geoserver/ows?service=WMS&version=1.3.0&request=GetCapabilities"
+        cls.valid_url = (
+            f"{settings.OGC_SERVER['default']['LOCATION']}ows?service=WMS&version=1.3.0&request=GetCapabilities"
+        )
         cls.user, _ = get_user_model().objects.get_or_create(username="admin")
         cls.invalid_payload = {
             "url": "http://invalid.com",
@@ -119,9 +122,12 @@ class TestRemoteWMSResourceHandler(TestCase):
         self.assertIsNotNone(_exc)
         self.assertTrue("The provided url is not reachable")
 
-    @override_settings(SAFE_URL_TRUSTED_HOSTS=["geoserver:8080"])
-    def test_is_valid_should_pass_with_valid_url(self):
-        self.handler.is_valid_url(url=self.valid_payload_with_parse_false["url"])
+    @patch("geonode.upload.handlers.common.remote.safe_request_url")
+    def test_is_valid_should_pass_with_valid_url(self, mock_safe_request_url):
+        trusted_host = urlsplit(self.valid_payload_with_parse_false["url"]).netloc
+        mock_safe_request_url.return_value = MagicMock()
+        with self.settings(SAFE_URL_TRUSTED_HOSTS=[trusted_host]):
+            self.handler.is_valid_url(url=self.valid_payload_with_parse_false["url"])
 
     def test_extract_params_from_data(self):
         actual, _data = self.handler.extract_params_from_data(

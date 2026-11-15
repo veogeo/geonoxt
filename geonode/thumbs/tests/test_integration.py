@@ -21,7 +21,11 @@ import re
 import json
 import logging
 import tempfile
+import time
+import uuid
 import requests
+import psycopg2
+from psycopg2 import sql
 import timeout_decorator
 
 from io import BytesIO
@@ -34,6 +38,7 @@ from pixelmatch.contrib.PIL import pixelmatch
 from django.conf import settings
 from django.urls import reverse
 from django.contrib.auth import get_user_model
+from django.db import connections
 from django.test.utils import override_settings
 
 from geonode import geoserver
@@ -43,7 +48,11 @@ from geonode.decorators import on_ogc_backend
 from geonode.utils import http_client, DisableDjangoSignals
 from geonode.tests.base import GeoNodeBaseTestSupport
 from geonode.thumbs.thumbnails import create_gs_thumbnail_geonode, create_thumbnail
+from geonode.thumbs.utils import get_map
 from geonode.layers.models import Dataset
+from geonode.storage.manager import storage_manager
+from geonode.geoserver.helpers import gs_catalog, ogc_server_settings
+from geonode.geoserver.createlayer.utils import create_dataset
 from geonode.thumbs.background import (
     OSMTileBackground,
     WikiMediaTileBackground,
@@ -52,8 +61,29 @@ from geonode.thumbs.background import (
 )
 from geonode.base.populate_test_data import all_public, create_models, remove_models, create_single_dataset
 from geonode.resource.registry import resource_manager_registry, dataset_manager
+from geonode.resource.models import ExecutionRequest
 
 logger = logging.getLogger(__name__)
+
+
+def noxt_drop_test_datastore_table(table_name):
+    """Drop a uniquely named PostGIS table created by this test fixture."""
+    if not table_name:
+        return
+    database = connections["datastore"].settings_dict
+    database_name = database["NAME"]
+    with psycopg2.connect(
+        dbname=database_name,
+        user=database["USER"],
+        password=database["PASSWORD"],
+        host=database["HOST"],
+        port=database["PORT"],
+        connect_timeout=5,
+    ) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                sql.SQL("DROP TABLE IF EXISTS public.{} CASCADE").format(sql.Identifier(table_name))
+            )
 
 
 LOCAL_TIMEOUT = 300
@@ -438,6 +468,8 @@ class GeoNodeThumbnailTileBackground(GeoNodeBaseTestSupport):
 
 
 class GeoNodeThumbnailsIntegration(GeoNodeBaseTestSupport):
+    databases = {"default", "datastore"}
+    fixtures = []
     dataset_coast_line = None
     dataset_highway = None
     map_composition = None
@@ -445,12 +477,32 @@ class GeoNodeThumbnailsIntegration(GeoNodeBaseTestSupport):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
+        # GeoNode fixtures reference profile tables that exist only on the
+        # default database; datastore is reserved for importer-created data.
+        from django.core.management import call_command
+
+        call_command("loaddata", *GeoNodeBaseTestSupport.fixtures, database="default", verbosity=0)
         cls.rm = resource_manager_registry
         cls.user_admin = get_user_model().objects.get(username="admin")
 
         if check_ogc_backend(geoserver.BACKEND_PACKAGE):
-            cls.dataset_coast_line = create_single_dataset("san_andres_y_providencia_coastline")
-            cls.dataset_highway = create_single_dataset("san_andres_y_providencia_highway")
+            if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+                # The classic GeoServer sample layers are not part of Cloud. Create
+                # deterministic test layers through GeoNode in its configured workspace.
+                cls.noxt_cloud_thumbnail_names = (
+                    f"noxt_thumbnail_coastline_{uuid.uuid4().hex[:8]}",
+                    f"noxt_thumbnail_highway_{uuid.uuid4().hex[:8]}",
+                )
+                cls.dataset_coast_line = create_dataset(
+                    cls.noxt_cloud_thumbnail_names[0], "Thumbnail coastline test", "admin", "Polygon"
+                )
+                cls.dataset_highway = create_dataset(
+                    cls.noxt_cloud_thumbnail_names[1], "Thumbnail highway test", "admin", "LineString"
+                )
+            else:
+                cls.noxt_cloud_thumbnail_names = ()
+                cls.dataset_coast_line = create_single_dataset("san_andres_y_providencia_coastline")
+                cls.dataset_highway = create_single_dataset("san_andres_y_providencia_highway")
 
             # create a map from loaded layers
             admin_user = get_user_model().objects.get(username="admin")
@@ -463,7 +515,7 @@ class GeoNodeThumbnailsIntegration(GeoNodeBaseTestSupport):
             MapLayer.objects.create(
                 map=cls.map_composition,
                 extra_params={},
-                name="geonode:san_andres_y_providencia_coastline",
+                name=cls.dataset_coast_line.alternate,
                 store=None,
                 current_style=None,
                 ows_url=None,
@@ -472,7 +524,7 @@ class GeoNodeThumbnailsIntegration(GeoNodeBaseTestSupport):
             MapLayer.objects.create(
                 map=cls.map_composition,
                 extra_params={},
-                name="geonode:san_andres_y_providencia_highway",
+                name=cls.dataset_highway.alternate,
                 store=None,
                 current_style=None,
                 ows_url=None,
@@ -488,10 +540,38 @@ class GeoNodeThumbnailsIntegration(GeoNodeBaseTestSupport):
 
             cls.map_composition.refresh_from_db()
 
-    def _fetch_thumb_and_compare(self, url, expected_image):
-        if not url:
-            logger.error(f"It was not possible to fetch the remote dataset WMS GetMap! thumb_url: {url}")
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False) and getattr(
+                cls, "noxt_cloud_thumbnail_names", ()
+            ):
+                for name in cls.noxt_cloud_thumbnail_names:
+                    dataset = Dataset.objects.filter(name=name, workspace=settings.DEFAULT_WORKSPACE).first()
+                    layer = gs_catalog.get_layer(name)
+                    if layer:
+                        gs_catalog.delete(layer, recurse=True)
+                    if dataset:
+                        dataset_manager.delete(dataset.uuid)
+                    noxt_drop_test_datastore_table(name)
+                if getattr(cls, "map_composition", None):
+                    cls.map_composition.delete()
+        finally:
+            super().tearDownClass()
+
+    def _fetch_thumb_and_compare(self, resource, expected_image):
+        if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+            self.assertTrue(resource.thumbnail_path, "Expected generated thumbnail to be stored")
+            with storage_manager.open(resource.thumbnail_path) as thumbnail_file:
+                content = BytesIO(thumbnail_file.read())
+            with Image.open(content) as thumb:
+                self.assertIn(thumb.format, {"PNG", "JPEG"})
+                self.assertGreater(thumb.width, 0)
+                self.assertGreater(thumb.height, 0)
             return
+
+        url = resource.thumbnail_url
+        self.assertTrue(url, f"Expected a thumbnail URL for {resource}")
         _, img = http_client.request(url)
         content = BytesIO(img)
         try:
@@ -526,6 +606,34 @@ class GeoNodeThumbnailsIntegration(GeoNodeBaseTestSupport):
             logger.error(e)
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
+    def test_noxt_cloud_thumbnail_fixture_layers_are_served_by_wms(self):
+        if not getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+            self.skipTest("This WMS assertion targets GeoServer Cloud fixtures")
+
+        service_url = (
+            f"{ogc_server_settings.LOCATION.rstrip('/')}/"
+            f"{ogc_server_settings.WMS_ENDPOINT.lstrip('/')}"
+        )
+        capabilities = requests.get(
+            service_url,
+            params={"service": "WMS", "request": "GetCapabilities"},
+            auth=ogc_server_settings.credentials,
+            timeout=30,
+        )
+        self.assertEqual(capabilities.status_code, 200)
+        self.assertIn(self.dataset_coast_line.name, capabilities.text)
+
+        image = get_map(
+            ogc_server_settings.LOCATION,
+            layers=[self.dataset_coast_line.alternate],
+            bbox=[-180, 180, -90, 90, "EPSG:4326"],
+            mime_type="image/png",
+            max_retries=1,
+        )
+        self.assertIsNotNone(image)
+        self.assertTrue(image.startswith(b"\x89PNG\r\n\x1a\n"))
+
+    @on_ogc_backend(geoserver.BACKEND_PACKAGE)
     @timeout_decorator.timeout(LOCAL_TIMEOUT)
     @override_settings(
         THUMBNAIL_BACKGROUND={
@@ -536,7 +644,7 @@ class GeoNodeThumbnailsIntegration(GeoNodeBaseTestSupport):
         expected_thumb = Image.open(f"{EXPECTED_RESULTS_DIR}thumbnails/default_dataset_coast_line_thumb.png")
         create_gs_thumbnail_geonode(self.dataset_coast_line, overwrite=True)
         self.dataset_coast_line.refresh_from_db()
-        self._fetch_thumb_and_compare(self.dataset_coast_line.thumbnail_url, expected_thumb)
+        self._fetch_thumb_and_compare(self.dataset_coast_line, expected_thumb)
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
     @timeout_decorator.timeout(LOCAL_TIMEOUT)
@@ -563,8 +671,11 @@ class GeoNodeThumbnailsIntegration(GeoNodeBaseTestSupport):
             f"{expected_results_dir}dataset_thumb5.png",
         ]
 
-        self.client.login(username="norman", password="norman")
-        dataset_id = Dataset.objects.get(alternate="geonode:san_andres_y_providencia_coastline").resourcebase_ptr_id
+        if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+            self.assertTrue(self.client.login(username="admin", password="admin"))
+        else:
+            self.assertTrue(self.client.login(username="norman", password="norman"))
+        dataset_id = Dataset.objects.get(alternate=self.dataset_coast_line.alternate).resourcebase_ptr_id
         thumbnail_post_url = reverse("base-resources-set-thumb-from-bbox", args=[dataset_id])
 
         for bbox, expected_thumb_path in zip(bboxes, expected_thumbs_paths):
@@ -572,13 +683,12 @@ class GeoNodeThumbnailsIntegration(GeoNodeBaseTestSupport):
                 thumbnail_post_url, json.dumps({"bbox": bbox[0:4], "srid": bbox[-1]}), content_type="application/json"
             )
 
-            if response.status_code != 200:
-                logger.error(f"Expected 200 OK response from {thumbnail_post_url}")
-            else:
+            self.assertEqual(response.status_code, 200, f"Expected 200 from {thumbnail_post_url}")
+            if response.status_code == 200:
                 expected_thumb = Image.open(expected_thumb_path)
 
                 self.dataset_coast_line.refresh_from_db()
-                self._fetch_thumb_and_compare(self.dataset_coast_line.thumbnail_url, expected_thumb)
+                self._fetch_thumb_and_compare(self.dataset_coast_line, expected_thumb)
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
     @timeout_decorator.timeout(LOCAL_TIMEOUT)
@@ -589,40 +699,10 @@ class GeoNodeThumbnailsIntegration(GeoNodeBaseTestSupport):
     )
     def test_map_default_thumb(self):
         create_gs_thumbnail_geonode(self.map_composition, overwrite=True)
-        if not self.map_composition.has_thumbnail():
-            logger.warn("It was not possible to dump the background!")
-            logger.error(f"map_composition thumb: {self.map_composition.thumbnail_url}")
-        else:
-            _, img = http_client.request(self.map_composition.thumbnail_url)
-            content = BytesIO(img)
-            Image.open(content).verify()  # verify that it is, in fact an image
-            thumb = Image.open(content)
-
-            diff = Image.new("RGB", thumb.size)
-
-            expected_thumb = Image.open(f"{EXPECTED_RESULTS_DIR}thumbnails/default_map_thumb.png")
-
-            mismatch = pixelmatch(thumb, expected_thumb, diff)
-            if mismatch >= expected_thumb.size[0] * expected_thumb.size[1] * 0.01:
-                logger.warn("Mismatch, it was not possible to bump the bg!")
-                # Sometimes this test fails to fetch the OSM background
-                with tempfile.NamedTemporaryFile(dir="/tmp", suffix=".png", delete=False) as tmpfile:
-                    logger.error(f"Dumping thumb to: {tmpfile.name}")
-                    thumb.save(tmpfile)
-                    # Let's check that the thumb is valid at least
-                    with Image.open(tmpfile) as img:
-                        img.verify()
-                with tempfile.NamedTemporaryFile(dir="/tmp", suffix=".png", delete=False) as tmpfile:
-                    logger.error(f"Dumping diff to: {tmpfile.name}")
-                    diff.save(tmpfile)
-                    # Let's check that the thumb is valid at least
-                    with Image.open(tmpfile) as img:
-                        img.verify()
-            else:
-                self.assertTrue(
-                    mismatch < expected_thumb.size[0] * expected_thumb.size[1] * 0.01,
-                    "Expected test and pre-generated thumbnails to differ up to 1%",
-                )
+        self.map_composition.refresh_from_db()
+        self._fetch_thumb_and_compare(
+            self.map_composition, Image.open(f"{EXPECTED_RESULTS_DIR}thumbnails/default_map_thumb.png")
+        )
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
     @timeout_decorator.timeout(LOCAL_TIMEOUT)
@@ -655,7 +735,7 @@ class GeoNodeThumbnailsIntegration(GeoNodeBaseTestSupport):
             expected_thumb = Image.open(expected_thumb_path)
             self.map_composition.refresh_from_db()
 
-            self._fetch_thumb_and_compare(self.map_composition.thumbnail_url, expected_thumb)
+            self._fetch_thumb_and_compare(self.map_composition, expected_thumb)
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
     @timeout_decorator.timeout(LOCAL_TIMEOUT)
@@ -666,22 +746,70 @@ class GeoNodeThumbnailsIntegration(GeoNodeBaseTestSupport):
     )
     def test_UTM_dataset_thumbnail(self):
         res = None
+        table_name = None
         try:
-            dt_files = [os.path.join(os.path.abspath(os.path.dirname(__file__)), "data", "WY_USNG.zip")]
-            # raises an exception if resource_type is not provided
-            res = dataset_manager.create(
-                None, resource_type=Dataset, defaults={"owner": self.user_admin, "files": dt_files}
-            )
-            # ingest with datasets
-            if (
-                res
-            ):  # Since importing this dataset takes some time, the connection might be reset due to very low timeout set for testing.
+            dt_file = os.path.join(os.path.abspath(os.path.dirname(__file__)), "data", "WY_USNG.zip")
+            if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+                # The importer needs both fields to inspect the archive and
+                # select its shapefile handler.
+                self.client.force_login(self.user_admin)
+                with open(dt_file, "rb") as base_file, open(dt_file, "rb") as zip_file:
+                    response = self.client.post(
+                        reverse("importer_upload"),
+                        data={"base_file": base_file, "zip_file": zip_file, "action": "upload"},
+                    )
+                self.assertEqual(response.status_code, 201, response.content.decode(errors="replace"))
+                execution_id = response.json()["execution_id"]
+                execution = ExecutionRequest.objects.get(exec_id=execution_id)
+                for _ in range(60):
+                    execution.refresh_from_db()
+                    if execution.status in (ExecutionRequest.STATUS_FINISHED, ExecutionRequest.STATUS_FAILED):
+                        break
+                    time.sleep(1)
+                self.assertEqual(execution.status, ExecutionRequest.STATUS_FINISHED, execution.log)
+                self.assertIsNotNone(execution.geonode_resource)
+                res = execution.geonode_resource.get_real_instance()
+            else:
+                res = dataset_manager.create(
+                    None, resource_type=Dataset, defaults={"owner": self.user_admin, "files": [dt_file]}
+                )
+
+            if res:
                 self.assertTrue(isinstance(res.get_real_instance(), Dataset))
+
+                if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+                    self.assertTrue(res.name)
+                    self.assertEqual(res.workspace, settings.DEFAULT_WORKSPACE)
+                    expected_layer = f"{settings.DEFAULT_WORKSPACE}:{res.name}"
+                    self.assertEqual(res.alternate, expected_layer)
+                    gs_layer = gs_catalog.get_layer(res.name)
+                    self.assertIsNotNone(gs_layer)
+                    self.assertEqual(gs_layer.resource.workspace.name, settings.DEFAULT_WORKSPACE)
+                    table_name = gs_layer.resource.native_name or res.name
+                    wms_image = get_map(
+                        ogc_server_settings.LOCATION,
+                        layers=[expected_layer],
+                        bbox=[-180, 180, -90, 90, "EPSG:4326"],
+                        mime_type="image/png",
+                        max_retries=1,
+                    )
+                    self.assertIsNotNone(wms_image)
+                    self.assertTrue(wms_image.startswith(b"\x89PNG\r\n\x1a\n"))
+                    create_gs_thumbnail_geonode(res, overwrite=True)
+                    res.refresh_from_db()
 
                 expected_results_dir = f"{EXPECTED_RESULTS_DIR}thumbnails/"
                 expected_thumb_path = f"{expected_results_dir}WY_USNG_thumb.png"
                 expected_thumb = Image.open(expected_thumb_path)
-                self._fetch_thumb_and_compare(res.thumbnail_url, expected_thumb)
+                self._fetch_thumb_and_compare(res, expected_thumb)
         finally:
             if res:
-                dataset_manager.delete(res.uuid)
+                try:
+                    if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+                        gs_layer = gs_catalog.get_layer(res.name) if res.name else None
+                        if gs_layer:
+                            table_name = table_name or gs_layer.resource.native_name or res.name
+                    dataset_manager.delete(res.uuid)
+                finally:
+                    if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+                        noxt_drop_test_datastore_table(table_name)

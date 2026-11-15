@@ -136,92 +136,16 @@ GeoWebCache DiskQuota should always be enabled on a production system. If it is 
   *Tile Caching: Disk Quota Configuration*
   ///
 
-### GeoFence Security Rules On Postgis
+### GeoServer Cloud ACL Rules
 
-By default, GeoFence stores the security rules on an `H2` DB.
-
-On a production system, this is not really recommended. You will need to update the GeoServer Docker container in order to enable GeoFence to store the rules into the DB Docker container instead.
-
-In order to do that, follow the procedure below:
-
-```bash
-# Enter the GeoServer Docker Container
-docker-compose exec geoserver bash
-
-# Install a suitable editor
-apt update
-apt install nano
-
-# Edit the GeoFence DataStore .properties file
-nano /geoserver_data/data/geofence/geofence-datasource-ovr.properties
-```
-
-!!! Note
-    Make sure to provide the same connection parameters specified in the `.env` file.
-
-```ini
-geofenceVendorAdapter.databasePlatform=org.hibernate.spatial.dialect.postgis.PostgisDialect
-geofenceDataSource.driverClassName=org.postgresql.Driver
-geofenceDataSource.url=jdbc:postgresql://db:5432/my_geonode_data
-geofenceDataSource.username=my_geonode_data
-geofenceDataSource.password=********
-geofenceEntityManagerFactory.jpaPropertyMap[hibernate.default_schema]=public
-
-geofenceDataSource.testOnBorrow=true
-geofenceDataSource.validationQuery=SELECT 1
-geofenceEntityManagerFactory.jpaPropertyMap[hibernate.testOnBorrow]=true
-geofenceEntityManagerFactory.jpaPropertyMap[hibernate.validationQuery]=SELECT 1
-
-geofenceDataSource.removeAbandoned=true
-geofenceDataSource.removeAbandonedTimeout=60
-geofenceDataSource.connectionProperties=ApplicationName=GeoFence;
-```
-
-```bash
-# Update the GeoServer WEB-INF/lib JARs accordingly
-wget --no-check-certificate "https://repo1.maven.org/maven2/org/postgis/postgis-jdbc/1.3.3/postgis-jdbc-1.3.3.jar" -O postgis-jdbc-1.3.3.jar
-wget --no-check-certificate "https://maven.geo-solutions.it/org/hibernatespatial/hibernate-spatial-postgis/1.1.3.2/hibernate-spatial-postgis-1.1.3.2.jar" -O hibernate-spatial-postgis-1.1.3.2.jar
-rm /usr/local/tomcat/webapps/geoserver/WEB-INF/lib/hibernate-spatial-h2-geodb-1.1.3.1.jar
-mv hibernate-spatial-postgis-1.1.3.2.jar /usr/local/tomcat/webapps/geoserver/WEB-INF/lib/
-mv postgis-jdbc-1.3.3.jar /usr/local/tomcat/webapps/geoserver/WEB-INF/lib/
-```
-
-The container is ready to be restarted now.
-
-!!! warning
-    Remember to do a **soft restart** otherwise the `WEB-INF/lib` JARs will be reset to the original state.
-
-```bash
-# Exit the GeoServer container
-exit
-
-# Soft Restart GeoServer Docker Container
-docker-compose restart geoserver
-```
-
-**IMPORTANT**: The first time you perform this procedure, GeoFence will not be able to retrieve the old security rules anymore.
-
-You will need to [Fixup GeoNode Datasets Permissions](#fixup-geonode-datasets-permissions) in order to regenerate the security rules.
+This branch synchronizes GeoNode resource permissions with the GeoServer Cloud ACL service. ACL owns and stores the authorization rules; it does not use GeoFence or GeoFence's PostGIS/H2 datastore. Configure and back up the ACL service and GeoServer Cloud catalog according to the [GeoNode + GeoServer Cloud guide](../docker/geoserver-cloud.md).
 
 ## Fixup GeoNode Datasets Permissions
 
-The list of the GeoFence security rules is available from the `GeoFence Data Rules` section.
-
-Always double-check the list is accessible and the data rules are there. If it is empty, no layer will be accessible by standard users other than admin.
-
-![](img/production_geoserver_010.png){ align=center width="350px" }
-/// caption
-*GeoFence Data Rules*
-///
-
-In order to re-sync the GeoFence security rules, follow the procedure below:
+To reconcile GeoNode dataset permissions with the GeoServer Cloud ACL service, run the ACL synchronization command from the Django container:
 
 ```bash
-# Enter the GeoNode Docker Container
-docker-compose exec django bash
-
-# Run the `sync_geonode_datasets` management command
-./manage.sh sync_geonode_datasets --updatepermissions
+docker compose exec django python manage.py sync_security_rules
 ```
 
 ## Regenerate GeoNode Datasets Thumbnails

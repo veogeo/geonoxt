@@ -31,6 +31,8 @@ from django.core.exceptions import ValidationError
 from rest_framework.decorators import api_view
 from rest_framework.mixins import ListModelMixin, RetrieveModelMixin
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.authentication import SessionAuthentication, BasicAuthentication
+from oauth2_provider.contrib.rest_framework import OAuth2Authentication
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
 
@@ -80,6 +82,7 @@ class ExecutionRequestViewset(WithDynamicViewSetMixin, ListModelMixin, RetrieveM
     """
 
     permission_classes = [IsAuthenticated, IsOwnerOrReadOnly]
+    authentication_classes = [SessionAuthentication, BasicAuthentication, OAuth2Authentication]
     filter_backends = [DynamicFilterBackend, DynamicSortingFilter, DynamicSearchFilter]
     serializer_class = ExecutionRequestSerializer
     pagination_class = GeoNodeApiPagination

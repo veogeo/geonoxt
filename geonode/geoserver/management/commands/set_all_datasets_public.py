@@ -18,11 +18,9 @@
 #########################################################################
 import logging
 
-from django.conf import settings
 from django.core.management.base import BaseCommand
+from django.core.management.base import CommandError
 from geonode.layers.models import Dataset
-
-from geonode.geoserver.security.utils import set_geofence_all
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +31,16 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         all_datasets = Dataset.objects.all()
+        failed_datasets = []
 
         for index, layer in enumerate(all_datasets):
-            print(f"[{(index + 1)} / {len(all_datasets)}] Setting public permissions to Dataset [{layer.name}] ...")
+            self.stdout.write(
+                f"[{(index + 1)} / {len(all_datasets)}] Setting public permissions to Dataset [{layer.name}] ..."
+            )
             try:
-                use_geofence = settings.GEOSERVER_SECURITY_ENABLED
-                if use_geofence:
-                    set_geofence_all(layer)
+                # Dataset.set_permissions reaches the configured resource manager:
+                # GeoServer ACL is the security rules backend.
+                # Use GeoNode permission synchronization rather than direct ACL REST calls.
                 layer.set_default_permissions()
                 perm_spec = {"users": {}, "groups": {}}
                 perm_spec["users"]["admin"] = ['view_resourcebase', 'change_resourcebase_permissions',
@@ -51,4 +52,8 @@ class Command(BaseCommand):
                 perm_spec["users"]["AnonymousUser"] = ['view_resourcebase', 'download_resourcebase']
                 layer.set_permissions(perm_spec)
             except Exception:
-                logger.error(f"[ERROR] Dataset [{layer.name}] couldn't be updated")
+                logger.exception("[ERROR] Dataset [%s] couldn't be updated", layer.name)
+                failed_datasets.append(layer.name)
+
+        if failed_datasets:
+            raise CommandError("Could not update public permissions for datasets: " + ", ".join(failed_datasets))

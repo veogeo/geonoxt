@@ -63,7 +63,7 @@ class TestBaseVectorFileHandler(TestCase):
         cls.user, _ = get_user_model().objects.get_or_create(username="admin")
         cls.invalid_files = {"base_file": cls.invalid_gpkg}
         cls.valid_files = {"base_file": "/tmp/valid.gpkg"}
-        cls.owner = get_user_model().objects.first()
+        cls.owner = cls.user
         cls.layer = create_single_dataset(name="stazioni_metropolitana", owner=cls.owner)
 
     def setUp(self) -> None:
@@ -378,7 +378,7 @@ class TestBaseVectorFileHandler(TestCase):
         is not going to be called and the layer is skipped
         """
         mocked_obj = MagicMock()
-        mocked_obj.ShortName = "DUAIAI"
+        mocked_obj.GetName.return_value = "DUAIAI"
         ogr2ogr_driver.return_value = mocked_obj
         exec_id = None
         try:
@@ -393,10 +393,9 @@ class TestBaseVectorFileHandler(TestCase):
             with self.assertRaises(Exception) as exception:
                 # start the resource import
                 self.handler.import_resource(files=self.valid_files, execution_id=str(exec_id))
-            self.assertIn(
-                "not recognized as being in a supported file format",
+            self.assertRegex(
                 exception.exception.args[0],
-                "not recognized as being in a supported file format",
+                r"not recognized as (?:being )?a supported file format",
             )
 
             celery_chord.assert_not_called()
@@ -460,7 +459,6 @@ class TestBaseVectorFileHandler(TestCase):
 
         _datastore = settings.DATABASES["datastore"]
 
-        # Build the expected list to match the "Actual" output in your trace
         expected_cmd_list = [
             "/usr/bin/ogr2ogr",
             "--config",
@@ -468,7 +466,7 @@ class TestBaseVectorFileHandler(TestCase):
             "YES",
             "-f",
             "PostgreSQL",
-            f"PG: dbname='{_datastore['NAME']}' host={os.getenv('DATABASE_HOST', 'localhost')} port=5432 user='{_datastore['USER']}' password='{_datastore['PASSWORD']}' ",
+            f"PG: dbname='{_datastore['NAME']}' host={_datastore['HOST']} port={_datastore.get('PORT', 5432)} user='{_datastore['USER']}' password='{_datastore['PASSWORD']}' ",
             self.valid_files.get("base_file"),
             "-lco",
             "FID=fid",

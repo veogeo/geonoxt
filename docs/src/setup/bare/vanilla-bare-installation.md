@@ -431,10 +431,9 @@ sudo sed -i -e "s/JAVA_OPTS=/#JAVA_OPTS=/g" /opt/tomcat/latest/bin/setenv.sh
 echo 'GEOSERVER_DATA_DIR="/opt/data/geoserver_data"' | sudo tee --append /opt/tomcat/latest/bin/setenv.sh
 echo 'GEOSERVER_LOG_LOCATION="/opt/data/geoserver_logs/geoserver.log"' | sudo tee --append /opt/tomcat/latest/bin/setenv.sh
 echo 'GEOWEBCACHE_CACHE_DIR="/opt/data/gwc_cache_dir"' | sudo tee --append /opt/tomcat/latest/bin/setenv.sh
-echo 'GEOFENCE_DIR="$GEOSERVER_DATA_DIR/geofence"' | sudo tee --append /opt/tomcat/latest/bin/setenv.sh
 echo 'TIMEZONE="UTC"' | sudo tee --append /opt/tomcat/latest/bin/setenv.sh
 
-echo 'JAVA_OPTS="-server -Djava.awt.headless=true -Dorg.geotools.shapefile.datetime=false -DGS-SHAPEFILE-CHARSET=UTF-8 -XX:+UseParallelGC -XX:ParallelGCThreads=4 -Dfile.encoding=UTF8 -Duser.timezone=$TIMEZONE -Xms512m -Xmx4096m -Djavax.servlet.request.encoding=UTF-8 -Djavax.servlet.response.encoding=UTF-8 -DGEOSERVER_CSRF_DISABLED=true -DPRINT_BASE_URL=http://localhost:8080/geoserver/pdf -DGEOSERVER_DATA_DIR=$GEOSERVER_DATA_DIR -Dgeofence.dir=$GEOFENCE_DIR -DGEOSERVER_LOG_LOCATION=$GEOSERVER_LOG_LOCATION -DGEOWEBCACHE_CACHE_DIR=$GEOWEBCACHE_CACHE_DIR -Dgwc.context.suffix=gwc"' | sudo tee --append /opt/tomcat/latest/bin/setenv.sh
+echo 'JAVA_OPTS="-server -Djava.awt.headless=true -Dorg.geotools.shapefile.datetime=false -DGS-SHAPEFILE-CHARSET=UTF-8 -XX:+UseParallelGC -XX:ParallelGCThreads=4 -Dfile.encoding=UTF8 -Duser.timezone=$TIMEZONE -Xms512m -Xmx4096m -Djavax.servlet.request.encoding=UTF-8 -Djavax.servlet.response.encoding=UTF-8 -DGEOSERVER_CSRF_DISABLED=true -DPRINT_BASE_URL=http://localhost:8080/geoserver/pdf -DGEOSERVER_DATA_DIR=$GEOSERVER_DATA_DIR -DGEOSERVER_LOG_LOCATION=$GEOSERVER_LOG_LOCATION -DGEOWEBCACHE_CACHE_DIR=$GEOWEBCACHE_CACHE_DIR -Dgwc.context.suffix=gwc"' | sudo tee --append /opt/tomcat/latest/bin/setenv.sh
 ```
 
 !!! Note
@@ -449,9 +448,8 @@ echo 'JAVA_OPTS="-server -Djava.awt.headless=true -Dorg.geotools.shapefile.datet
     GEOSERVER_DATA_DIR="/opt/data/geoserver_data"
     GEOSERVER_LOG_LOCATION="/opt/data/geoserver_logs/geoserver.log"
     GEOWEBCACHE_CACHE_DIR="/opt/data/gwc_cache_dir"
-    GEOFENCE_DIR="$GEOSERVER_DATA_DIR/geofence"
     TIMEZONE="UTC"
-    JAVA_OPTS="-server -Djava.awt.headless=true -Dorg.geotools.shapefile.datetime=false -DGS-SHAPEFILE-CHARSET=UTF-8 -XX:+UseParallelGC -XX:ParallelGCThreads=4 -Dfile.encoding=UTF8 -Duser.timezone=$TIMEZONE -Xms512m -Xmx4096m -Djavax.servlet.request.encoding=UTF-8 -Djavax.servlet.response.encoding=UTF-8 -DGEOSERVER_CSRF_DISABLED=true -DPRINT_BASE_URL=http://localhost:8080/geoserver/pdf -DGEOSERVER_DATA_DIR=$GEOSERVER_DATA_DIR -Dgeofence.dir=$GEOFENCE_DIR -DGEOSERVER_LOG_LOCATION=$GEOSERVER_LOG_LOCATION -DGEOWEBCACHE_CACHE_DIR=$GEOWEBCACHE_CACHE_DIR"
+    JAVA_OPTS="-server -Djava.awt.headless=true -Dorg.geotools.shapefile.datetime=false -DGS-SHAPEFILE-CHARSET=UTF-8 -XX:+UseParallelGC -XX:ParallelGCThreads=4 -Dfile.encoding=UTF8 -Duser.timezone=$TIMEZONE -Xms512m -Xmx4096m -Djavax.servlet.request.encoding=UTF-8 -Djavax.servlet.response.encoding=UTF-8 -DGEOSERVER_CSRF_DISABLED=true -DPRINT_BASE_URL=http://localhost:8080/geoserver/pdf -DGEOSERVER_DATA_DIR=$GEOSERVER_DATA_DIR -DGEOSERVER_LOG_LOCATION=$GEOSERVER_LOG_LOCATION -DGEOWEBCACHE_CACHE_DIR=$GEOWEBCACHE_CACHE_DIR"
     ```
 
     Those options could be updated or changed manually at any time, accordingly to your needs.
@@ -477,78 +475,6 @@ sudo tee /etc/logrotate.d/geoserver <<EOF
   su tomcat tomcat
 }
 EOF
-```
-
-#### Conifgure the Geofence DB
-
-Before starting the service, Geofence must be configured to connect to the PostgreSQL DB, where its rules will be stored.
-
-!!! Warning 
-    In previous versions this step was optional and a file-based H2 DB could be used. This option has been dropped since using H2 is highly discouraged.
-
-Open the ``geofence-datasource-ovr.properties`` file for edit:
-
-```bash
-sudo vim /opt/data/geoserver_data/geofence/geofence-datasource-ovr.properties
-```
-
-And paste the following code by replace the placehoders with the required files
-
-```bash
-geofenceVendorAdapter.databasePlatform=org.hibernate.spatial.dialect.postgis.PostgisDialect
-geofenceDataSource.driverClassName=org.postgresql.Driver
-geofenceDataSource.url=jdbc:postgresql://localhost:5432/geonode_data
-geofenceDataSource.username=geonode
-geofenceDataSource.password=geonode
-geofenceEntityManagerFactory.jpaPropertyMap[hibernate.default_schema]=public
-
-geofenceDataSource.testOnBorrow=true
-geofenceDataSource.validationQuery=SELECT 1
-geofenceEntityManagerFactory.jpaPropertyMap[hibernate.testOnBorrow]=true
-geofenceEntityManagerFactory.jpaPropertyMap[hibernate.validationQuery]=SELECT 1
-
-geofenceDataSource.removeAbandoned=true
-geofenceDataSource.removeAbandonedTimeout=60
-geofenceDataSource.connectionProperties=ApplicationName=GeoFence;
-```
-
-In order to make the changes effective, you'll need to restart the Servlet Container.
-
-```bash
-# Restart the server
-sudo systemctl restart tomcat9.service
-
-# Follow the startup logs
-sudo tail -F -n 300 /opt/data/geoserver_logs/geoserver.log
-```
-
-If you can see on the logs something similar to this, without errors:
-
-```bash
-...
-2019-05-31 10:06:34,190 INFO [geoserver.wps] - Found 5 bindable processes in GeoServer specific processes
-2019-05-31 10:06:34,281 INFO [geoserver.wps] - Found 89 bindable processes in Deprecated processes
-2019-05-31 10:06:34,298 INFO [geoserver.wps] - Found 31 bindable processes in Vector processes
-2019-05-31 10:06:34,307 INFO [geoserver.wps] - Found 48 bindable processes in Geometry processes
-2019-05-31 10:06:34,307 INFO [geoserver.wps] - Found 1 bindable processes in PolygonLabelProcess
-2019-05-31 10:06:34,311 INFO [geoserver.wps] - Blacklisting process ras:ConvolveCoverage as the input kernel of type class javax.media.jai.KernelJAI cannot be handled
-2019-05-31 10:06:34,319 INFO [geoserver.wps] - Blacklisting process ras:RasterZonalStatistics2 as the input zones of type class java.lang.Object cannot be handled
-2019-05-31 10:06:34,320 INFO [geoserver.wps] - Blacklisting process ras:RasterZonalStatistics2 as the input nodata of type class it.geosolutions.jaiext.range.Range cannot be handled
-2019-05-31 10:06:34,320 INFO [geoserver.wps] - Blacklisting process ras:RasterZonalStatistics2 as the input rangeData of type class java.lang.Object cannot be handled
-2019-05-31 10:06:34,320 INFO [geoserver.wps] - Blacklisting process ras:RasterZonalStatistics2 as the output zonal statistics of type interface java.util.List cannot be handled
-2019-05-31 10:06:34,321 INFO [geoserver.wps] - Found 18 bindable processes in Raster processes
-2019-05-31 10:06:34,917 INFO [ows.OWSHandlerMapping] - Mapped URL path [/TestWfsPost] onto handler 'wfsTestServlet'
-2019-05-31 10:06:34,918 INFO [ows.OWSHandlerMapping] - Mapped URL path [/wfs/*] onto handler 'dispatcher'
-2019-05-31 10:06:34,918 INFO [ows.OWSHandlerMapping] - Mapped URL path [/wfs] onto handler 'dispatcher'
-2019-05-31 10:06:42,237 INFO [geoserver.security] - Start reloading user/groups for service named default
-2019-05-31 10:06:42,241 INFO [geoserver.security] - Reloading user/groups successful for service named default
-2019-05-31 10:06:42,357 WARN [auth.GeoFenceAuthenticationProvider] - INIT FROM CONFIG
-2019-05-31 10:06:42,494 INFO [geoserver.security] - AuthenticationCache Initialized with 1000 Max Entries, 300 seconds idle time, 600 seconds time to live and 3 concurrency level
-2019-05-31 10:06:42,495 INFO [geoserver.security] - AuthenticationCache Eviction Task created to run every 600 seconds
-2019-05-31 10:06:42,506 INFO [config.GeoserverXMLResourceProvider] - Found configuration file in /opt/data/gwc_cache_dir
-2019-05-31 10:06:42,516 INFO [config.GeoserverXMLResourceProvider] - Found configuration file in /opt/data/gwc_cache_dir
-2019-05-31 10:06:42,542 INFO [config.XMLConfiguration] - Wrote configuration to /opt/data/gwc_cache_dir
-2019-05-31 10:06:42,547 INFO [geoserver.importer] - Enabling import store: memory
 ```
 
 Your `GeoServer` should be up and running at

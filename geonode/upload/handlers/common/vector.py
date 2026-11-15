@@ -570,7 +570,7 @@ class BaseVectorFileHandler(BaseHandler):
         gdal_proxy = gdal.OpenEx(
             files.get("base_file"),
             nOpenFlags=gdal.OF_VECTOR,
-            allowed_drivers=[driver.ShortName] if driver else None,
+            allowed_drivers=[driver.GetName()] if driver else None,
             **self._gdal_open_options(),
         )
         return [gdal_proxy]

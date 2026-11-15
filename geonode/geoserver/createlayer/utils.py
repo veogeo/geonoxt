@@ -30,7 +30,12 @@ from geonode import GeoNodeException
 from geonode.layers.models import Dataset
 from geonode.layers.utils import get_valid_name
 from geonode.resource.registry import resource_manager_registry, dataset_manager
-from geonode.geoserver.helpers import gs_catalog, ogc_server_settings, create_geoserver_db_featurestore
+from geonode.geoserver.helpers import (
+    gs_catalog,
+    ogc_server_settings,
+    create_geoserver_db_featurestore,
+    noxt_create_workspace,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -166,8 +171,19 @@ def create_gs_dataset(name, title, geometry_type, attributes=None, srs="EPSG:432
     native_name = name
     cat = gs_catalog
 
-    # get workspace and store
-    workspace = cat.get_default_workspace()
+    # Classic GeoServer follows its configured catalog default. Cloud deployments
+    # can have a different catalog default (for example ``ne``), so use the
+    # workspace GeoNode is configured to publish into.
+    if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+        workspace_name = settings.DEFAULT_WORKSPACE
+        workspaces = cat.get_workspaces(names=workspace_name)
+        workspace = workspaces[0] if workspaces else noxt_create_workspace(
+            cat, workspace_name, settings.SITEURL
+        )
+        if workspace is None:
+            raise GeoNodeException(f"Could not find or create GeoServer workspace {workspace_name}")
+    else:
+        workspace = cat.get_default_workspace()
 
     # get (or create the datastore)
     datastore = get_or_create_datastore(cat, workspace)

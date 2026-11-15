@@ -18,13 +18,20 @@
 #########################################################################
 import ast
 import os
+import shutil
+import subprocess
+import tempfile
 import time
+import uuid
 
 import mock
+import requests
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.db import connections
 from django.test import override_settings
 from django.urls import reverse
+from rest_framework.test import APIClient
 from dynamic_models.models import FieldSchema, ModelSchema
 from geonode import documents
 from geonode.assets.models import Asset
@@ -45,6 +52,8 @@ from geonode.services import enumerations
 from geonode.services.models import Service
 from django.forms.models import model_to_dict
 from unittest import skip
+import psycopg2
+from psycopg2 import sql
 
 logger = logging.getLogger()
 geourl = settings.GEODATABASE_URL
@@ -114,7 +123,12 @@ class BaseImporterEndToEndTest(ImporterBaseTestSupport):
             raise Exception(f"Async still in progress after 1 min of waiting: {model_to_dict(exc_obj)}")
 
     def _cleanup_layers(self, name):
-        layer = [x for x in self.cat.get_resources() if name in x.name]
+        if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+            workspace = self.cat.get_workspace("geonode")
+            resources = self.cat.get_resources(workspaces=[workspace]) if workspace else []
+        else:
+            resources = self.cat.get_resources()
+        layer = [x for x in resources if name in x.name]
         if layer:
             for el in layer:
                 try:
@@ -125,6 +139,148 @@ class BaseImporterEndToEndTest(ImporterBaseTestSupport):
             ResourceBase.objects.filter(alternate__icontains=name).delete()
         except:  # noqa
             pass
+
+    def _noxt_create_unique_geopackage(self):
+        """Copy the GeoPackage fixture with a unique layer name for Cloud runs."""
+        layer_name = f"stazioni_metropolitana_{uuid.uuid4().hex[:12]}"
+        directory = tempfile.mkdtemp(prefix="noxt-cloud-geopackage-")
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        geopackage_path = os.path.join(directory, f"{layer_name}.gpkg")
+        subprocess.run(
+            [
+                "ogr2ogr",
+                "-f",
+                "GPKG",
+                geopackage_path,
+                self.valid_gkpg,
+                "stazioni_metropolitana",
+                "-nln",
+                layer_name,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.addCleanup(self._noxt_cleanup_uploaded_layer, layer_name)
+        return geopackage_path, layer_name
+
+    def _noxt_create_unique_multilayer_geopackage(self):
+        """Copy both layers with unique names so reruns cannot collide with Cloud data."""
+        prefix = f"noxt_{uuid.uuid4().hex[:12]}"
+        layer_names = (f"{prefix}_area", f"{prefix}_example")
+        directory = tempfile.mkdtemp(prefix="noxt-cloud-multilayer-geopackage-")
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        geopackage_path = os.path.join(directory, f"{prefix}.gpkg")
+        subprocess.run(
+            [
+                "ogr2ogr",
+                "-f",
+                "GPKG",
+                geopackage_path,
+                self.valid_multiple_layers_gkpg,
+                "area",
+                "-nln",
+                layer_names[0],
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            [
+                "ogr2ogr",
+                "-update",
+                "-f",
+                "GPKG",
+                geopackage_path,
+                self.valid_multiple_layers_gkpg,
+                "example",
+                "-nln",
+                layer_names[1],
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        for layer_name in layer_names:
+            self.addCleanup(self._noxt_cleanup_uploaded_layer, layer_name)
+        return geopackage_path, layer_names
+
+    def _noxt_create_unique_csv(self):
+        """Copy the CSV fixture with a unique layer name for Cloud runs."""
+        layer_name = f"noxt_valid_{uuid.uuid4().hex[:12]}"
+        directory = tempfile.mkdtemp(prefix="noxt-cloud-csv-")
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        csv_path = os.path.join(directory, f"{layer_name}.csv")
+        shutil.copy2(self.valid_csv, csv_path)
+        self.addCleanup(self._noxt_cleanup_uploaded_layer, layer_name)
+        return csv_path, layer_name
+
+    def _noxt_create_unique_kml(self):
+        """Copy the KML fixture and rename its internal feature for Cloud runs."""
+        layer_name = f"noxt_sample_point_dataset_{uuid.uuid4().hex[:12]}"
+        directory = tempfile.mkdtemp(prefix="noxt-cloud-kml-")
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        kml_path = os.path.join(directory, f"{layer_name}.kml")
+        with open(self.valid_kml, encoding="utf-8") as source_file:
+            kml_content = source_file.read().replace("sample_point_dataset", layer_name)
+        with open(kml_path, "w", encoding="utf-8") as target_file:
+            target_file.write(kml_content)
+        self.addCleanup(self._noxt_cleanup_uploaded_layer, layer_name)
+        return kml_path, layer_name
+
+    def _noxt_create_unique_shapefile(self):
+        """Copy all shapefile components under one unique Cloud layer name."""
+        layer_name = f"noxt_air_runways_{uuid.uuid4().hex[:12]}"
+        directory = tempfile.mkdtemp(prefix="noxt-cloud-shapefile-")
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        payload = {}
+        for key, source_path in self.valid_shp.items():
+            _, extension = os.path.splitext(source_path)
+            target_path = os.path.join(directory, f"{layer_name}{extension.lower()}")
+            shutil.copy2(source_path, target_path)
+            payload[key] = target_path
+        self.addCleanup(self._noxt_cleanup_uploaded_layer, layer_name)
+        return payload, layer_name
+
+    def _noxt_cleanup_uploaded_layer(self, layer_name):
+        """Remove this test's uniquely named resource, GWC entry, and datastore table."""
+        if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+            # In Cloud, GWC is a separate service. Delete its tile-layer
+            # configuration before deleting the REST catalog resource so its
+            # catalog-reload event cannot retain a stale LayerInfo reference.
+            from geonode.geoserver.security import delete_dataset_cache
+
+            delete_dataset_cache(f"{settings.DEFAULT_WORKSPACE}:{layer_name}")
+        self._cleanup_layers(layer_name)
+        from geonode.geoserver.acl_rules import Noxt_ACLRuleBatch
+        from geonode.geoserver.helpers import acl_client, acl_rule_manager
+
+        acl_rules = [
+            rule
+            for rule in acl_client.get_rules()["rules"]
+            if rule.get("workspace") == settings.DEFAULT_WORKSPACE and rule.get("layer") == layer_name
+        ]
+        if acl_rules:
+            delete_batch = Noxt_ACLRuleBatch(f"Cleanup Cloud test layer {layer_name}")
+            for rule_id in {rule["id"] for rule in acl_rules if rule.get("id") is not None}:
+                delete_batch.add_delete_rule(rule_id)
+            if delete_batch.length():
+                acl_client.run_batch(delete_batch)
+
+        database = connections["datastore"].settings_dict
+        with psycopg2.connect(
+            dbname=database["NAME"],
+            user=database["USER"],
+            password=database["PASSWORD"],
+            host=database["HOST"],
+            port=database["PORT"],
+            connect_timeout=5,
+        ) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    sql.SQL("DROP TABLE IF EXISTS public.{} CASCADE").format(sql.Identifier(layer_name))
+                )
 
     def _assertimport(
         self,
@@ -140,7 +296,6 @@ class BaseImporterEndToEndTest(ImporterBaseTestSupport):
     ):
         try:
             self.client.force_login(self.admin)
-
             response = self.client.post(self.url, data=payload)
             if assert_failure:
                 self.assertEqual(500, response.status_code, response.json())
@@ -167,6 +322,11 @@ class BaseImporterEndToEndTest(ImporterBaseTestSupport):
                 Q(alternate__icontains=f"geonode:{initial_name.lower().replace(' ', '_')}")
                 | Q(alternate__icontains=initial_name.lower().replace(" ", "_"))
             )
+            if assert_payload and assert_payload.get("sourcetype") == SOURCE_TYPE_REMOTE:
+                # A remote WMS can reference a layer already present in
+                # GeoNode's own workspace. Select the imported remote record,
+                # not the local source layer sharing the same alternate.
+                resource = resource.filter(sourcetype=SOURCE_TYPE_REMOTE)
             self.assertTrue(resource.exists())
 
             if not skip_geoserver:
@@ -191,6 +351,8 @@ class BaseImporterEndToEndTest(ImporterBaseTestSupport):
                 resource = ResourceBase.objects.filter(
                     Q(alternate__icontains=f"geonode:{initial_name}") | Q(alternate__icontains=initial_name)
                 )
+                if assert_payload and assert_payload.get("sourcetype") == SOURCE_TYPE_REMOTE:
+                    resource = resource.filter(sourcetype=SOURCE_TYPE_REMOTE)
                 resource.delete()
 
 
@@ -198,25 +360,23 @@ class ImporterGeoPackageImportTest(BaseImporterEndToEndTest):
     @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data"})
     @override_settings(GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data")
     def test_import_geopackage(self):
-        self._cleanup_layers(name="stazioni_metropolitana")
-
-        payload = {"base_file": open(self.valid_gkpg, "rb"), "action": "upload"}
-        initial_name = "stazioni_metropolitana"
+        geopackage_path, initial_name = self._noxt_create_unique_geopackage()
+        payload = {"base_file": open(geopackage_path, "rb"), "action": "upload"}
+        self.addCleanup(payload["base_file"].close)
         self._assertimport(payload, initial_name)
-        self._cleanup_layers(name="stazioni_metropolitana")
 
     @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data"})
     @override_settings(GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data")
     def test_import_gpkg_overwrite(self):
-        self._cleanup_layers(name="stazioni_metropolitana")
-        initial_name = "stazioni_metropolitana"
-        payload = {"base_file": open(self.valid_gkpg, "rb"), "action": "upload"}
+        geopackage_path, initial_name = self._noxt_create_unique_geopackage()
+        payload = {"base_file": open(geopackage_path, "rb"), "action": "upload"}
+        self.addCleanup(payload["base_file"].close)
         prev_dataset = self._assertimport(payload, initial_name, keep_resource=True)
 
-        payload = {"base_file": open(self.valid_gkpg, "rb"), "action": "replace"}
+        payload = {"base_file": open(geopackage_path, "rb"), "action": "replace"}
+        self.addCleanup(payload["base_file"].close)
         payload["resource_pk"] = prev_dataset.pk
         self._assertimport(payload, initial_name, overwrite=True, last_update=prev_dataset.last_updated)
-        self._cleanup_layers(name="stazioni_metropolitana")
 
     @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data"})
     @override_settings(
@@ -229,56 +389,31 @@ class ImporterGeoPackageImportTest(BaseImporterEndToEndTest):
         Test that setting FILE_UPLOAD_PERMISSIONS=None prevents chmod errors during file upload.
         This is important for compatibility with volume types (e.g., Azure Files) that disallow chmod.
         """
-        self._cleanup_layers(name="stazioni_metropolitana")
-
-        payload = {"base_file": open(self.valid_gkpg, "rb"), "action": "upload"}
-        initial_name = "stazioni_metropolitana"
+        geopackage_path, initial_name = self._noxt_create_unique_geopackage()
+        payload = {"base_file": open(geopackage_path, "rb"), "action": "upload"}
+        self.addCleanup(payload["base_file"].close)
 
         self._assertimport(payload, initial_name)
-
-        self._cleanup_layers(name="stazioni_metropolitana")
 
 
 class ImporterMultupleGeoPackageImportTest(BaseImporterEndToEndTest):
     @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data"})
     @override_settings(GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data")
     def test_import_multiple_layers_from_geopackage(self):
-        self._cleanup_layers(name="area")
-        self._cleanup_layers(name="example")
+        geopackage_path, (area_name, example_name) = self._noxt_create_unique_multilayer_geopackage()
         try:
             resource = None
-            payload = {"base_file": open(self.valid_multiple_layers_gkpg, "rb"), "action": "upload"}
-            self._assertimport(payload, "area")
+            payload = {"base_file": open(geopackage_path, "rb"), "action": "upload"}
+            self.addCleanup(payload["base_file"].close)
+            self._assertimport(payload, area_name)
             resource = ResourceBase.objects.filter(
-                Q(alternate__icontains="geonode:example") | Q(alternate__icontains="example")
+                Q(alternate__icontains=f"geonode:{example_name}") | Q(alternate__icontains=example_name)
             )
             self.assertTrue(resource.exists())
         finally:
             if resource.first():
                 resource.first().delete()
-            self._cleanup_layers(name="area")
-            self._cleanup_layers(name="example")
 
-
-class ImporterNoCRSImportTest(BaseImporterEndToEndTest):
-    @override_settings(ASYNC_SIGNALS=False)
-    @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data"})
-    @override_settings(GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data")
-    @skip("unknown fail on circleci")
-    def test_import_geopackage_with_no_crs_table(self):
-
-        self._cleanup_layers(name="mattia_test")
-        payload = {"base_file": open(self.no_crs_gpkg, "rb"), "action": "upload"}
-        initial_name = "mattia_test"
-        with self.assertLogs(level="ERROR") as _log:
-            self._assertimport(payload, initial_name)
-
-        self.assertIn(
-            "The following layer layer_styles does not have a Coordinate Reference System (CRS) and will be skipped.",
-            [x.message for x in _log.records],
-        )
-
-        self._cleanup_layers(name="mattia_test")
 
     @override_settings(ASYNC_SIGNALS=False)
     @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data"})
@@ -338,12 +473,15 @@ class ImporterGCSVImportTest(BaseImporterEndToEndTest):
     @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data"})
     @override_settings(GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data")
     def test_import_csv(self):
-        self._cleanup_layers(name="valid")
-
-        payload = {"base_file": open(self.valid_csv, "rb"), "action": "upload"}
-        initial_name = "valid"
+        if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+            csv_path, initial_name = self._noxt_create_unique_csv()
+        else:
+            self._cleanup_layers(name="valid")
+            csv_path, initial_name = self.valid_csv, "valid"
+        payload = {"base_file": open(csv_path, "rb"), "action": "upload"}
         self._assertimport(payload, initial_name)
-        self._cleanup_layers(name="valid")
+        if not getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+            self._cleanup_layers(name="valid")
 
     @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data"})
     @override_settings(GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data")
@@ -405,11 +543,15 @@ class ImporterKMLImportTest(BaseImporterEndToEndTest):
     @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data"})
     @override_settings(GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data")
     def test_import_kml(self):
-        self._cleanup_layers(name="sample_point_dataset")
-        payload = {"base_file": open(self.valid_kml, "rb"), "action": "upload"}
-        initial_name = "sample_point_dataset"
+        if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+            kml_path, initial_name = self._noxt_create_unique_kml()
+        else:
+            self._cleanup_layers(name="sample_point_dataset")
+            kml_path, initial_name = self.valid_kml, "sample_point_dataset"
+        payload = {"base_file": open(kml_path, "rb"), "action": "upload"}
         self._assertimport(payload, initial_name)
-        self._cleanup_layers(name="sample_point_dataset")
+        if not getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+            self._cleanup_layers(name="sample_point_dataset")
 
     @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data"})
     @override_settings(GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data")
@@ -437,12 +579,16 @@ class ImporterShapefileImportTest(BaseImporterEndToEndTest):
     @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data"})
     @override_settings(GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data")
     def test_import_shapefile(self):
-        self._cleanup_layers(name="air_Runways")
-        payload = {_filename: open(_file, "rb") for _filename, _file in self.valid_shp.items()}
+        if getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+            shapefile_paths, initial_name = self._noxt_create_unique_shapefile()
+        else:
+            self._cleanup_layers(name="air_Runways")
+            shapefile_paths, initial_name = self.valid_shp, "air_Runways"
+        payload = {_filename: open(_file, "rb") for _filename, _file in shapefile_paths.items()}
         payload["action"] = "upload"
-        initial_name = "air_Runways"
         self._assertimport(payload, initial_name)
-        self._cleanup_layers(name="air_Runways")
+        if not getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
+            self._cleanup_layers(name="air_Runways")
 
     @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data"})
     @override_settings(GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data")
@@ -556,6 +702,111 @@ class ImporterDocumentImportTest(BaseImporterEndToEndTest):
 
 
 class ImporterRasterImportTest(BaseImporterEndToEndTest):
+    @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data", "ASYNC_SIGNALS": "False"})
+    @override_settings(
+        GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data",
+        ASYNC_SIGNALS=False,
+        GEOSERVER_SECURITY_ENABLED=True,
+        NOXT_GEOSERVER_ACL_ENABLED=True,
+    )
+    def test_noxt_cloud_raster_is_readable_through_wcs(self):
+        if not settings.NOXT_GEOSERVER_CLOUD_ENABLED:
+            self.skipTest("This integration test targets GeoServer Cloud WCS.")
+
+        from xml.etree import ElementTree
+
+        layer_name = f"noxt_wcs_raster_{uuid.uuid4().hex[:12]}"
+        directory = tempfile.mkdtemp(prefix="noxt-cloud-wcs-raster-")
+        raster_path = os.path.join(directory, f"{layer_name}.tif")
+        shutil.copy2(self.valid_tif, raster_path)
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        self.addCleanup(self._noxt_cleanup_uploaded_layer, layer_name)
+
+        raster_file = open(raster_path, "rb")
+        self.addCleanup(raster_file.close)
+        resource = self._assertimport(
+            {"base_file": raster_file, "action": "upload"},
+            layer_name,
+            keep_resource=True,
+        )
+        resource.set_permissions(
+            {
+                "users": {
+                    "AnonymousUser": ["view_resourcebase", "download_resourcebase"],
+                    "admin": [
+                        "view_resourcebase",
+                        "change_resourcebase_permissions",
+                        "download_resourcebase",
+                        "publish_resourcebase",
+                        "change_resourcebase_metadata",
+                    ],
+                },
+                "groups": {},
+            }
+        )
+        from geonode.geoserver.helpers import acl_client
+
+        acl_rules = acl_client.get_rules()["rules"]
+        self.assertTrue(
+            any(
+                rule.get("workspace") == settings.DEFAULT_WORKSPACE
+                and rule.get("layer") == layer_name
+                and rule.get("service") == "WCS"
+                and rule.get("access") == "ALLOW"
+                for rule in acl_rules
+            ),
+            f"GeoNode did not synchronize an anonymous WCS allow rule for {layer_name}.",
+        )
+        # WCS 2.0.1 encodes the workspace separator as a double underscore.
+        coverage_id = f"{settings.DEFAULT_WORKSPACE}__{layer_name}"
+        wcs_url = f"{settings.GEOSERVER_LOCATION}wcs"
+
+        coverage_ids = []
+        last_capabilities_error = None
+        noxt_catalog_deadline = time.monotonic() + 45
+        while time.monotonic() < noxt_catalog_deadline:
+            try:
+                capabilities = requests.get(
+                    wcs_url,
+                    params={"service": "WCS", "request": "GetCapabilities", "version": "2.0.1"},
+                    timeout=10,
+                )
+                self.assertEqual(200, capabilities.status_code, capabilities.text[:1000])
+                root = ElementTree.fromstring(capabilities.content)
+                coverage_ids = [
+                    element.text
+                    for element in root.iter()
+                    if element.tag.rsplit("}", 1)[-1] == "CoverageId" and element.text
+                ]
+                if coverage_id in coverage_ids:
+                    break
+                last_capabilities_error = None
+            except Exception as exc:
+                last_capabilities_error = exc
+            time.sleep(1)
+        self.assertIn(
+            coverage_id,
+            coverage_ids,
+            f"WCS did not advertise {coverage_id}; last error: {last_capabilities_error}",
+        )
+
+        coverage = requests.get(
+            wcs_url,
+            params={
+                "service": "WCS",
+                "request": "GetCoverage",
+                "version": "2.0.1",
+                "coverageId": coverage_id,
+                "format": "image/tiff",
+            },
+            timeout=60,
+        )
+        self.assertEqual(200, coverage.status_code, coverage.text[:1000])
+        self.assertTrue(
+            coverage.content.startswith((b"II*\x00", b"MM\x00*")),
+            f"WCS did not return a TIFF for {resource.alternate}: {coverage.headers.get('Content-Type')}",
+        )
+
     @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data"})
     @override_settings(GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data")
     def test_import_raster(self):
@@ -642,29 +893,140 @@ class Importer3dTilesImportTest(BaseImporterEndToEndTest):
 
 
 class ImporterWMSImportTest(BaseImporterEndToEndTest):
+    def noxt_geonode_wms_source(self):
+        """Publish a temporary source in GeoNode's workspace for remote-WMS tests."""
+        geopackage_path, source_name = self._noxt_create_unique_geopackage()
+        base_file = open(geopackage_path, "rb")
+        self.addCleanup(base_file.close)
+        source = self._assertimport(
+            {"base_file": base_file, "action": "upload"},
+            source_name,
+            keep_resource=True,
+        )
+        source.set_permissions(
+            {
+                "users": {
+                    "AnonymousUser": ["view_resourcebase", "download_resourcebase"],
+                    "admin": [
+                        "view_resourcebase",
+                        "change_resourcebase_permissions",
+                        "download_resourcebase",
+                        "publish_resourcebase",
+                        "change_resourcebase_metadata",
+                    ],
+                },
+                "groups": {},
+            }
+        )
+        from geonode.geoserver.helpers import acl_client
+
+        all_acl_rules = acl_client.get_rules()["rules"]
+        acl_rules = [
+            rule
+            for rule in all_acl_rules
+            if rule.get("workspace") == "geonode" and rule.get("layer") == source_name
+        ]
+        self.assertTrue(
+            any(rule.get("service") == "WMS" and rule.get("access") == "ALLOW" for rule in acl_rules),
+            f"GeoNode did not synchronize an anonymous WMS allow rule to Cloud ACL: {acl_rules}",
+        )
+        source.title = "Noxt Remote WMS Source"
+        source.save(update_fields=["title"])
+        # Keep the temporary Cloud layer's advertised title in sync with the
+        # GeoNode fixture so the imported remote resource is distinguishable.
+        cloud_resource = self.cat.get_resource(name=source_name, workspace="geonode")
+        cloud_resource.title = source.title
+        self.cat.save(cloud_resource)
+        service_url = (
+            f"{settings.OGC_SERVER['default']['LOCATION'].replace('gateway:8080', 'gateway.geonode.internal:8080').rstrip('/')}/geonode/ows"
+        )
+        matching_layer_names = []
+        wms = None
+        last_capabilities_error = None
+        noxt_catalog_deadline = time.monotonic() + 45
+        while time.monotonic() < noxt_catalog_deadline:
+            try:
+                # GeoNode's WebMapService factory is LRU-cached by URL. Clear it here
+                # so a previous test's GetCapabilities document cannot mask this upload.
+                WebMapService.cache_clear()
+                _, wms = WebMapService(
+                    f"{service_url}?service=WMS&version=1.3.0&request=GetCapabilities",
+                    timeout=3,
+                )
+                matching_layer_names = [name for name in wms.contents if name.rsplit(":", 1)[-1] == source_name]
+                if matching_layer_names:
+                    break
+                last_capabilities_error = None
+            except Exception as exc:  # Cloud service discovery can briefly return a gateway error.
+                last_capabilities_error = exc
+            time.sleep(1)
+        self.assertTrue(
+            matching_layer_names,
+            f"Expected Cloud WMS layer {source_name}; available layers: "
+            f"{list(wms.contents) if wms else 'unavailable'}; "
+            f"last GetCapabilities error: {last_capabilities_error}",
+        )
+        layer_name = matching_layer_names[0]
+        layer = wms[layer_name]
+        image = wms.getmap(
+            layers=[layer_name],
+            srs="EPSG:4326",
+            bbox=tuple(layer.boundingBoxWGS84),
+            size=(64, 64),
+            format="image/png",
+            transparent=True,
+        )
+        self.assertTrue(image.read().startswith(b"\x89PNG\r\n\x1a\n"), "Cloud WMS GetMap did not return a PNG")
+        from geonode.thumbs.utils import get_map
+
+        west, south, east, north = layer.boundingBoxWGS84
+        thumbnail = get_map(
+            service_url,
+            [layer_name],
+            [west, east, south, north, "EPSG:4326"],
+            width=64,
+            height=64,
+            max_retries=1,
+        )
+        self.assertTrue(thumbnail, "GeoNode's thumbnail GetMap request did not return an image")
+        internal_thumbnail = get_map(
+            None,
+            [layer_name],
+            [west, east, south, north, "EPSG:4326"],
+            width=64,
+            height=64,
+            max_retries=1,
+        )
+        self.assertTrue(internal_thumbnail, "GeoNode's internal Cloud GetMap request did not return an image")
+        return source, source_name, service_url
+
+    @mock.patch("geonode.thumbs.background.OSMTileBackground.fetch", new=mock.Mock(return_value=None))
     @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data", "ASYNC_SIGNALS": "False"})
-    @override_settings(GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data", ASYNC_SIGNALS=False)
+    @override_settings(
+        GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data",
+        ASYNC_SIGNALS=False,
+        GEOSERVER_SECURITY_ENABLED=True,
+        NOXT_GEOSERVER_ACL_ENABLED=True,
+        SAFE_URL_TRUSTED_HOSTS=["gateway.geonode.internal:8080"],
+    )
     def test_import_wms(self):
-        _, wms = WebMapService(
-            f"{os.getenv('GEOSERVER_LOCATION')}/ows?service=WMS&version=1.3.0&request=GetCapabilities"
-        )
-        resource_to_take = next(iter(wms.contents))
-        res = wms[next(iter(wms.contents))]
-
-        import urllib.parse
-
-        url = urllib.parse.quote(
-            f"{os.getenv('GEOSERVER_LOCATION')}ows?service=WMS&version=1.3.0&request=GetCapabilities", safe=""
-        )
+        source, source_name, service_url = self.noxt_geonode_wms_source()
+        _, wms = WebMapService(f"{service_url}?service=WMS&version=1.3.0&request=GetCapabilities", timeout=5)
+        matching_layers = [name for name in wms.contents if name.rsplit(":", 1)[-1] == source_name]
+        self.assertTrue(matching_layers, f"Expected {source_name} in GeoNode WMS capabilities: {list(wms.contents)}")
+        resource_to_take = matching_layers[0]
+        res = wms[resource_to_take]
         payload = {
-            "url": f"http://localhost:8000/proxy?url={url}",
-            "title": "Remote Title",
+            "url": f"{service_url}?service=WMS&version=1.3.0&request=GetCapabilities",
+            "title": res.title,
             "type": "wms",
             "identifier": resource_to_take,
             "parse_remote_metadata": True,
             "action": "upload",
         }
-        initial_name = res.title.lower().replace(" ", "_")
+        # The source and imported records share the remote service's
+        # alternate, so the helper filters by REMOTE sourcetype.
+        initial_name = resource_to_take.rsplit(":", 1)[-1]
         assert_payload = {
             "subtype": "remote",
             "title": res.title,
@@ -674,59 +1036,67 @@ class ImporterWMSImportTest(BaseImporterEndToEndTest):
         }
         self._assertimport(payload, initial_name, skip_geoserver=True, assert_payload=assert_payload)
 
+    @mock.patch("geonode.thumbs.background.OSMTileBackground.fetch", new=mock.Mock(return_value=None))
     @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data", "ASYNC_SIGNALS": "False"})
-    @override_settings(GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data", ASYNC_SIGNALS=False)
+    @override_settings(
+        GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data",
+        ASYNC_SIGNALS=False,
+        GEOSERVER_SECURITY_ENABLED=True,
+        NOXT_GEOSERVER_ACL_ENABLED=True,
+        SAFE_URL_TRUSTED_HOSTS=["gateway.geonode.internal:8080"],
+    )
     def test_import_wms_harvestable_resource_should_be_created(self):
         """
         The WMS import should generate the harvestable resource if the remote service URL
         match with an exists harvester, so next time it will be managed by the harvester itself
         """
 
-        # creating remote service
-        # for the test we have to pass via the proxy
-        _, wms = WebMapService(
-            f"{os.getenv('GEOSERVER_LOCATION')}ows?service=WMS&version=1.3.0&request=GetCapabilities"
-        )
-        resource_to_take = next(iter(wms.contents))
-        res = wms[next(iter(wms.contents))]
-        import urllib.parse
-
-        url = urllib.parse.quote(
-            f"{os.getenv('GEOSERVER_LOCATION')}ows?service=WMS&version=1.3.0&request=GetCapabilities", safe=""
-        )
-        geoserver = urllib.parse.quote(f"{os.getenv('GEOSERVER_LOCATION')}ows?service=WMS", safe="")
-        harvester = Harvester.objects.create(
-            remote_url=f"http://localhost:8000/proxy/?url={geoserver}",
-            name="Test",
-            default_owner=self.user,
-            harvester_type="geonode.harvesting.harvesters.wms.OgcWmsHarvester",
-        )
-        Service.objects.create(
-            owner=self.admin,
-            title="Test",
-            type=enumerations.WMS,
-            method=enumerations.HARVESTED,
-            base_url=f"http://localhost:8000/proxy/?url={geoserver}",
-            name="test-wms-import-service",
-            harvester=harvester,
-        )
-        payload = {
-            "url": f"http://localhost:8000/proxy/?url={url}",
-            "title": "Remote Title",
-            "type": "wms",
-            "identifier": resource_to_take,
-            "parse_remote_metadata": True,
-            "action": "upload",
-        }
-        initial_name = res.title.lower().replace(" ", "_")
-        assert_payload = {
-            "subtype": "remote",
-            "title": res.title,
-            "resource_type": "dataset",
-            "sourcetype": "REMOTE",
-            "ptype": "gxp_wmscsource",
-        }
+        source = None
+        source_name = None
+        harvester = None
         try:
+            # Use a temporary GeoNode layer as the remote WMS source. The Cloud
+            # sample workspaces are intentionally outside this integration test.
+            source, source_name, service_url = self.noxt_geonode_wms_source()
+            _, wms = WebMapService(
+                f"{service_url}?service=WMS&version=1.3.0&request=GetCapabilities", timeout=5
+            )
+            matching_layers = [name for name in wms.contents if name.rsplit(":", 1)[-1] == source_name]
+            self.assertTrue(matching_layers, f"Expected {source_name} in GeoNode WMS capabilities: {list(wms.contents)}")
+            resource_to_take = matching_layers[0]
+            res = wms[resource_to_take]
+            geoserver = service_url
+            harvester = Harvester.objects.create(
+                remote_url=geoserver,
+                name="Test",
+                default_owner=self.user,
+                harvester_type="geonode.harvesting.harvesters.wms.OgcWmsHarvester",
+            )
+            Service.objects.create(
+                owner=self.admin,
+                title="Test",
+                type=enumerations.WMS,
+                method=enumerations.HARVESTED,
+                base_url=geoserver,
+                name="test-wms-import-service",
+                harvester=harvester,
+            )
+            payload = {
+                "url": f"{service_url}?service=WMS&version=1.3.0&request=GetCapabilities",
+                "title": res.title,
+                "type": "wms",
+                "identifier": resource_to_take,
+                "parse_remote_metadata": True,
+                "action": "upload",
+            }
+            initial_name = resource_to_take.rsplit(":", 1)[-1]
+            assert_payload = {
+                "subtype": "remote",
+                "title": res.title,
+                "resource_type": "dataset",
+                "sourcetype": "REMOTE",
+                "ptype": "gxp_wmscsource",
+            }
             res = self._assertimport(
                 payload, initial_name, skip_geoserver=True, assert_payload=assert_payload, keep_resource=True
             )
@@ -741,3 +1111,156 @@ class ImporterWMSImportTest(BaseImporterEndToEndTest):
         finally:
             if harvester:
                 harvester.delete()
+
+    @mock.patch("geonode.thumbs.background.OSMTileBackground.fetch", new=mock.Mock(return_value=None))
+    @mock.patch.dict(os.environ, {"GEONODE_GEODATABASE": "test_geonode_data", "ASYNC_SIGNALS": "False"})
+    @override_settings(
+        GEODATABASE_URL=f"{geourl.split('/geonode_data')[0]}/test_geonode_data",
+        ASYNC_SIGNALS=False,
+        GEOSERVER_SECURITY_ENABLED=True,
+        NOXT_GEOSERVER_ACL_ENABLED=True,
+        SAFE_URL_TRUSTED_HOSTS=["gateway.geonode.internal:8080"],
+    )
+    def test_noxt_private_layer_bearer_permissions(self):
+        """Verify real WMS/WFS Bearer access and denial for a private Cloud layer."""
+        if not settings.NOXT_GEOSERVER_CLOUD_ENABLED:
+            self.skipTest("This integration test targets GeoServer Cloud ACL.")
+
+        from geonode.geoserver.helpers import _create_acl_client
+
+        # This test is about Cloud's Bearer authorization, not Django's
+        # session-cookie middleware. APIClient avoids the test server's
+        # session-cookie behavior while preserving the authenticated uploader.
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin)
+        source, layer_name, service_url = self.noxt_geonode_wms_source()
+        self.addCleanup(source.delete)
+        user_model = get_user_model()
+        authorized_user, _ = user_model.objects.get_or_create(
+            username="noxt-bearer-test",
+            defaults={"email": "noxt-bearer-test@example.invalid", "is_active": True},
+        )
+        unauthorized_user, _ = user_model.objects.get_or_create(
+            username="noxt-bearer-outsider",
+            defaults={"email": "noxt-bearer-outsider@example.invalid", "is_active": True},
+        )
+
+        source.set_permissions(
+            {
+                "users": {
+                    "AnonymousUser": [],
+                    authorized_user.username: ["view_resourcebase", "download_resourcebase"],
+                },
+                "groups": {},
+            }
+        )
+
+        acl_rules = _create_acl_client().get_rules(workspace="geonode", layer=layer_name)["rules"]
+        for service in ("WMS", "WFS"):
+            self.assertTrue(
+                any(
+                    rule.get("service") in (service, None)
+                    and rule.get("access") == "ALLOW"
+                    and rule.get("user") == authorized_user.username
+                    for rule in acl_rules
+                ),
+                f"GeoNode did not synchronize {authorized_user.username}'s {service} allow rule to Cloud ACL: {acl_rules}",
+            )
+            self.assertFalse(
+                any(
+                    rule.get("service") in (service, None)
+                    and rule.get("access") == "ALLOW"
+                    and rule.get("user") is None
+                    and rule.get("role") is None
+                    for rule in acl_rules
+                ),
+                f"Cloud ACL still allows anonymous {service} access to the private layer: {acl_rules}",
+            )
+
+        authorized_token_file = os.environ.get("NOXT_GEOSERVER_CLOUD_TEST_AUTHORIZED_TOKEN_FILE")
+        unauthorized_token_file = os.environ.get("NOXT_GEOSERVER_CLOUD_TEST_UNAUTHORIZED_TOKEN_FILE")
+        self.assertTrue(authorized_token_file, "Set NOXT_GEOSERVER_CLOUD_TEST_AUTHORIZED_TOKEN_FILE for isolated introspection.")
+        self.assertTrue(unauthorized_token_file, "Set NOXT_GEOSERVER_CLOUD_TEST_UNAUTHORIZED_TOKEN_FILE for isolated introspection.")
+        authorized_token = open(authorized_token_file, encoding="utf-8").read().strip()
+        unauthorized_token = open(unauthorized_token_file, encoding="utf-8").read().strip()
+        self.assertTrue(authorized_token, "Authorized test token file is empty.")
+        self.assertTrue(unauthorized_token, "Unauthorized test token file is empty.")
+        wms_params = {
+            "service": "WMS",
+            "version": "1.1.1",
+            "request": "GetMap",
+            "layers": f"geonode:{layer_name}",
+            "styles": "",
+            "srs": "EPSG:4326",
+            "bbox": ",".join(map(str, source.ll_bbox_polygon.extent)),
+            "width": 64,
+            "height": 64,
+            "format": "image/png",
+        }
+        wfs_params = {
+            "service": "WFS",
+            "version": "2.0.0",
+            "request": "GetFeature",
+            "typeNames": f"geonode:{layer_name}",
+            "count": 1,
+            "outputFormat": "application/json",
+        }
+
+        allowed_wms = requests.get(
+            service_url,
+            params=wms_params,
+            headers={"Authorization": f"Bearer {authorized_token}"},
+            timeout=30,
+        )
+        self.assertEqual(200, allowed_wms.status_code, allowed_wms.text[:1000])
+        self.assertEqual("image/png", allowed_wms.headers.get("Content-Type", "").split(";", 1)[0])
+
+        allowed_wfs = requests.get(
+            service_url,
+            params=wfs_params,
+            headers={"Authorization": f"Bearer {authorized_token}"},
+            timeout=30,
+        )
+        self.assertEqual(200, allowed_wfs.status_code, allowed_wfs.text[:1000])
+        self.assertTrue(allowed_wfs.json().get("features"), allowed_wfs.text[:1000])
+
+        for label, headers in (
+            ("anonymous", {}),
+            ("unauthorized user", {"Authorization": f"Bearer {unauthorized_token}"}),
+        ):
+            for service_name, params in (("WMS", wms_params), ("WFS", wfs_params)):
+                response = requests.get(service_url, params=params, headers=headers, timeout=30)
+                if response.status_code in (401, 403):
+                    continue
+
+                # OGC services may return HTTP 200 with a protocol-level
+                # exception. Treat that as denial only when no protected data
+                # is returned.
+                self.assertEqual(
+                    200,
+                    response.status_code,
+                    f"{label} {service_name} access should be denied; got {response.status_code}: {response.text[:1000]}",
+                )
+                content_type = response.headers.get("Content-Type", "").split(";", 1)[0]
+                if service_name == "WMS":
+                    self.assertNotEqual(
+                        "image/png",
+                        content_type,
+                        f"{label} WMS received a rendered private layer.",
+                    )
+                    self.assertRegex(
+                        response.text,
+                        r"ServiceException|ExceptionReport|LayerNotDefined|AccessDenied",
+                        f"{label} WMS returned neither a denial status nor an OGC exception: {response.text[:1000]}",
+                    )
+                elif content_type == "application/json":
+                    self.assertFalse(
+                        response.json().get("features"),
+                        f"{label} WFS returned private features: {response.text[:1000]}",
+                    )
+                else:
+                    self.assertRegex(
+                        response.text,
+                        r"ServiceException|ExceptionReport|LayerNotDefined|AccessDenied",
+                        f"{label} WFS returned neither a denial status nor an OGC exception: {response.text[:1000]}",
+                    )

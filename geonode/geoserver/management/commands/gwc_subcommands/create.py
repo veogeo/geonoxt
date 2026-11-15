@@ -25,7 +25,7 @@ import xml.etree.ElementTree as ET
 from django.core.management import CommandError
 
 from geonode.base.management.command_utils import setup_logger
-from geonode.geoserver.gwc import GWCClient
+from geonode.geoserver.gwc import GWCClient, noxt_get_default_gridsets
 from geonode.layers.models import Dataset
 
 
@@ -158,6 +158,15 @@ class CreateTileLayers:
             raise CommandError(f"Error parsing XML template {xml_path}: {e}")
 
         root = tree.getroot()
+        grid_subsets = root.find(".//gridSubsets")
+        if grid_subsets is not None:
+            subsets = grid_subsets.findall("gridSubset")
+            for subset, grid_set_name in zip(subsets, noxt_get_default_gridsets()):
+                grid_set = subset.find("gridSetName")
+                if grid_set is not None:
+                    grid_set.text = grid_set_name
+            for subset in subsets[len(noxt_get_default_gridsets()) :]:
+                grid_subsets.remove(subset)
         return root
 
     def generate_xml(self, root, layer_name):

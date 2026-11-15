@@ -51,6 +51,7 @@ from .permissions import (
     VIEW_PERMISSIONS,
     DOWNLOAD_PERMISSIONS,
     ADMIN_PERMISSIONS,
+    OWNER_PERMISSIONS,
     SERVICE_PERMISSIONS,
     DATASET_ADMIN_PERMISSIONS,
     DATASET_EDIT_DATA_PERMISSIONS,
@@ -209,6 +210,9 @@ class PermissionLevelMixin:
 
         # default permissions for owner and owner's groups
         _owner = owner or self.owner
+        if _owner is not None:
+            owner_permissions = perm_spec["users"].get(_owner, [])
+            perm_spec["users"][_owner] = list(dict.fromkeys([*owner_permissions, *OWNER_PERMISSIONS]))
         user_groups = Group.objects.filter(name__in=_owner.groupmember_set.values_list("group__slug", flat=True))
 
         # Anonymous

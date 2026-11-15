@@ -18,9 +18,14 @@
 #########################################################################
 
 import logging
+from urllib.parse import urlencode
+from xml.etree.ElementTree import ParseError, fromstring
 
 from geonode.geoserver.helpers import gs_catalog
 from django.core.exceptions import ValidationError
+from django.conf import settings
+
+from geoserver.resource import FeatureType, parse_restrictions
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +87,43 @@ class GeoserverFeatureValidator(BaseFeatureValidator):
             return None
 
     def _get_restrictions(self, feature_type):
+        if settings.NOXT_GEOSERVER_CLOUD_ENABLED and isinstance(feature_type, FeatureType):
+            return self._noxt_get_cloud_wfs_restrictions(feature_type)
         return getattr(feature_type, "attributes_restrictions", None)
+
+    def _noxt_get_cloud_wfs_restrictions(self, feature_type):
+        """Fetch schema restrictions from Cloud's WFS endpoint.
+
+        geoserver-restconfig derives `/wfs` from the REST URL, but Cloud exposes
+        REST through RestConfig and WFS through the gateway. Keep the classic
+        path unchanged and use the explicit Cloud WFS URL for this request.
+        """
+        wfs_url = getattr(settings, "NOXT_GEOSERVER_CLOUD_WFS_URL", "")
+        if not wfs_url:
+            logger.warning("NOXT_GEOSERVER_CLOUD_WFS_URL is not configured; skipping Cloud schema restrictions")
+            return None
+
+        type_name = f"{feature_type.workspace.name}:{feature_type.name}"
+        params = {
+            "service": "WFS",
+            "version": "1.0.0",
+            "request": "DescribeFeatureType",
+            "typeName": type_name,
+        }
+        response = feature_type.catalog.http_request(f"{wfs_url}?{urlencode(params)}")
+        if response.status_code != 200:
+            logger.error(
+                "Cloud DescribeFeatureType failed for %s: %s %s",
+                type_name,
+                response.status_code,
+                response.text,
+            )
+            return None
+        try:
+            return parse_restrictions(fromstring(response.content))
+        except ParseError:
+            logger.exception("Could not parse Cloud DescribeFeatureType response for %s", type_name)
+            return None
 
     def _validate_attribute(self, attribute_name, value, restriction_info):
         if "restrictions" in restriction_info:
