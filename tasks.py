@@ -92,6 +92,7 @@ def update(ctx):
         current_allowed = []
     current_allowed.extend([str(pub_host), f"{pub_host}:{pub_port}"])
     allowed_hosts = [str(c) for c in current_allowed] + ['"nginx"', '"django"']
+    siteurl = envs['siteurl'].rstrip('/') + '/'
 
     # Preserved 100% original string format to avoid parsing errors
     content = f"""export DJANGO_SETTINGS_MODULE={envs['local_settings']}
@@ -106,17 +107,17 @@ def update(ctx):
     export GEOSERVER_WEB_UI_LOCATION={envs['gs_web_ui_loc']}
     export GEOSERVER_PUBLIC_LOCATION={envs['gs_pub_loc']}
     export GEOSERVER_ADMIN_PASSWORD={envs['gs_admin_pwd']}
-    export SITEURL={envs['siteurl']}
+    export SITEURL={siteurl}
     export ALLOWED_HOSTS="\\"{allowed_hosts}\\""
     export DATABASE_URL={envs['dburl']}
     export GEODATABASE_URL={envs['geodburl']}
     export STATIC_ROOT={envs['static_root']}
     export MEDIA_ROOT={envs['media_root']}
     export GEOIP_PATH={envs['geoip_path']}
-    export LOGIN_URL={envs['siteurl']}account/login/
-    export LOGOUT_URL={envs['siteurl']}account/logout/
-    export LOGIN_REDIRECT_URL={envs['siteurl']}
-    export LOGOUT_REDIRECT_URL={envs['siteurl']}"""
+    export LOGIN_URL={siteurl}account/login/
+    export LOGOUT_URL={siteurl}account/logout/
+    export LOGIN_REDIRECT_URL={siteurl}
+    export LOGOUT_REDIRECT_URL={siteurl}"""
 
     ctx.run(f'echo "{content}" >> {envs["override_fn"]}', pty=True)
     ctx.run(f"source {override_env}", pty=True)

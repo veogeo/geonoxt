@@ -1,0 +1,113 @@
+# GeoNode settings used when GeoServer Cloud services are included in the same
+# Compose project. The normal `geoserver` service remains an opt-in rollback profile.
+x-geonode-cloud-environment: &geonode-cloud-environment
+  SITEURL: ${SITEURL:?Set SITEURL to the public origin}
+  DATABASE_HOST: db
+  DATABASE_URL: ${DATABASE_URL:?Set the GeoNode database URL using host db}
+  GEODATABASE_URL: ${GEODATABASE_URL:?Set the GeoNode datastore URL using host db}
+  BROKER_URL: ${NOXT_GEONODE_BROKER_URL:-redis://redis:6379/0}
+  CELERY_RESULT_BACKEND: ${NOXT_GEONODE_CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+  NOXT_MEDIA_ROOT: /mnt/volumes/statics/uploaded
+  NOXT_GEOSERVER_CLOUD_ENABLED: ${NOXT_GEOSERVER_CLOUD_ENABLED:-True}
+  NOXT_GEOSERVER_CLOUD_OIDC_WEB_LOGIN_ENABLED: ${NOXT_GEOSERVER_CLOUD_OIDC_WEB_LOGIN_ENABLED:-false}
+  NOXT_GEOSERVER_INTEGRATION_TESTS: ${NOXT_GEOSERVER_INTEGRATION_TESTS:-False}
+  SOCIALACCOUNT_OIDC_PROVIDER_ENABLED: ${SOCIALACCOUNT_OIDC_PROVIDER_ENABLED:-False}
+  GEOSERVER_LB_HOST_IP: geoserver
+  GEOSERVER_LB_PORT: "9090"
+  GEOSERVER_LOCATION: http://geoserver:9090/geoserver/cloud/
+  NOXT_GEOSERVER_CLOUD_REST_URL: ${NOXT_GEOSERVER_CLOUD_REST_URL:-http://restconfig:8080/rest}
+  NOXT_GEOSERVER_CLOUD_WFS_URL: ${NOXT_GEOSERVER_CLOUD_WFS_URL:-http://geoserver:9090/geoserver/cloud/wfs}
+  NOXT_GEOSERVER_CLOUD_WMS_ENDPOINT: ${NOXT_GEOSERVER_CLOUD_WMS_ENDPOINT:-geonode/ows}
+  GEOSERVER_PUBLIC_LOCATION: ${SITEURL}/geoserver/
+  GEOSERVER_WEB_UI_LOCATION: ${SITEURL}/geoserver/cloud/
+  NOXT_PROXY_ALLOWED_HOSTS: '["geoserver"]'
+  NOXT_SAFE_URL_TRUSTED_HOSTS: '["geoserver:9090"]'
+  NOXT_GEOSERVER_ACL_ENABLED: "True"
+  NOXT_GEOSERVER_ACL_URL: http://acl:8080/acl/
+  NOXT_GEOSERVER_ACL_HEALTH_URL: http://acl:8081/actuator/health
+  NOXT_GEOSERVER_ACL_USER: ${NOXT_GEOSERVER_ACL_USER:-admin}
+  NOXT_GEOSERVER_ACL_PASSWORD: ${NOXT_GEOSERVER_ACL_PASSWORD:?Set the GeoServer ACL admin password}
+  GEOSERVER_ADMIN_USER: ${NOXT_GEOSERVER_ADMIN_USER:-admin}
+  GEOSERVER_ADMIN_PASSWORD: ${NOXT_GEOSERVER_ADMIN_PASSWORD:?Set the GeoServer REST admin password}
+  NOXT_GEOSERVER_CLOUD_ISSUER_URI: "${NOXT_GEOSERVER_CLOUD_ISSUER_URI:-${SITEURL}/o/}"
+  NOXT_GEOSERVER_CLOUD_DISCOVERY_URI: "${NOXT_GEOSERVER_CLOUD_DISCOVERY_URI:-${NOXT_GEOSERVER_CLOUD_ISSUER_URI:-${SITEURL}/o/}/.well-known/openid-configuration/}"
+  NOXT_GEOSERVER_CLOUD_JWK_SET_URI: "${NOXT_GEOSERVER_CLOUD_JWK_SET_URI-http://django:8000/o/.well-known/jwks.json}"
+  NOXT_GEOSERVER_CLOUD_AUDIENCE: ${NOXT_GEOSERVER_CLOUD_AUDIENCE:-geoserver-cloud}
+  NOXT_GEOSERVER_CLOUD_USERNAME_CLAIM: ${NOXT_GEOSERVER_CLOUD_USERNAME_CLAIM:-preferred_username}
+  NOXT_GEOSERVER_CLOUD_USER_FIELD: ${NOXT_GEOSERVER_CLOUD_USER_FIELD:-username}
+  NOXT_MAPSTORE_OIDC_CLIENT_ID: ${NOXT_MAPSTORE_OIDC_CLIENT_ID:-noxt-mapstore-client}
+  NOXT_MAPSTORE_OIDC_DISCOVERY_URI: "${NOXT_MAPSTORE_OIDC_DISCOVERY_URI:-${SITEURL}/o/.well-known/openid-configuration/}"
+  NOXT_MAPSTORE_OIDC_REDIRECT_URI: "${NOXT_MAPSTORE_OIDC_REDIRECT_URI:-${SITEURL}/catalogue/}"
+  NOXT_MAPSTORE_OIDC_RESOURCE: ${NOXT_MAPSTORE_OIDC_RESOURCE:-}
+  NOXT_MAPSTORE_OIDC_SCOPES: "${NOXT_MAPSTORE_OIDC_SCOPES:-openid groups offline_access}"
+  NOXT_GEOSERVER_CLOUD_OIDC_CLIENT_ID: ${NOXT_GEOSERVER_CLOUD_OIDC_CLIENT_ID:?Set the GeoServer Cloud OIDC client id}
+  NOXT_GEOSERVER_CLOUD_OIDC_CLIENT_SECRET: ${NOXT_GEOSERVER_CLOUD_OIDC_CLIENT_SECRET:?Set the GeoServer Cloud OIDC client secret}
+  NOXT_GEONODE_OIDC_PRIVATE_KEY_FILE: /run/secrets/geonode-oidc-private-key
+
+services:
+  # Keep the existing service and volume available for rollback. This profile prevents
+  # the monolithic GeoServer from starting when this overlay is selected.
+  legacy-geoserver:
+    profiles:
+      - legacy-geoserver
+
+  # Local GeoNode + Cloud runs do not need TLS certificate automation.
+  letsencrypt:
+    profiles:
+      - tls
+    # Keep the upstream restart policy for real HTTPS deployments. In local
+    # HTTP-only mode, hold the optional container idle instead of letting the
+    # upstream entrypoint exit successfully and be restarted by Docker forever.
+    environment:
+      LETSENCRYPT_MODE: ${NOXT_LETSENCRYPT_MODE:-disabled}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        if [ "$${LETSENCRYPT_MODE}" = "disabled" ]; then echo "Let’s Encrypt is disabled; keeping the TLS-profile service idle."; exec sleep infinity; fi;
+        exec /docker-entrypoint.sh /usr/sbin/crond -f
+
+  django:
+    image: ${NOXT_GEONODE_CLOUD_IMAGE:-geonode/geonode:cloud-oidc-local-26.04}
+    environment: *geonode-cloud-environment
+    volumes: !override
+      - .:/usr/src/geonode
+      - ${NOXT_MAPSTORE_CLIENT_REPO_PATH:?Set NOXT_MAPSTORE_CLIENT_REPO_PATH to the MapStore checkout}/geonode_mapstore_client/handlers.py:/usr/src/venv/lib/python3.12/site-packages/geonode_mapstore_client/handlers.py:ro
+      - ${NOXT_MAPSTORE_CLIENT_REPO_PATH:?Set NOXT_MAPSTORE_CLIENT_REPO_PATH to the MapStore checkout}/geonode_mapstore_client/tests.py:/usr/src/venv/lib/python3.12/site-packages/geonode_mapstore_client/tests.py:ro
+      - statics:/mnt/volumes/statics
+      - backup-restore:/backup_restore
+      - data:/data
+      - tmp:/tmp
+    secrets:
+      - geonode-oidc-private-key
+
+  celery:
+    image: ${NOXT_GEONODE_CLOUD_IMAGE:-geonode/geonode:cloud-oidc-local-26.04}
+    environment: *geonode-cloud-environment
+    healthcheck:
+      test: ["CMD-SHELL", "celery -b \"$${BROKER_URL}\" inspect ping"]
+      start_period: 30s
+      interval: 30s
+      timeout: 10s
+      retries: 2
+    volumes: !override
+      - .:/usr/src/geonode
+      - ${NOXT_MAPSTORE_CLIENT_REPO_PATH:?Set NOXT_MAPSTORE_CLIENT_REPO_PATH to the MapStore checkout}/geonode_mapstore_client/handlers.py:/usr/src/venv/lib/python3.12/site-packages/geonode_mapstore_client/handlers.py:ro
+      - statics:/mnt/volumes/statics
+      - backup-restore:/backup_restore
+      - data:/data
+      - tmp:/tmp
+    secrets:
+      - geonode-oidc-private-key
+
+  nginx:
+    environment:
+      GEOSERVER_LB_HOST_IP: geoserver
+      GEOSERVER_LB_PORT: "9090"
+      STATIC_ROOT: /mnt/volumes/statics/static/
+      MEDIA_ROOT: /mnt/volumes/statics/uploaded/
+    volumes:
+      - ./docker/geoserver-cloud-nginx.conf.envsubst:/etc/nginx/sites-enabled/geonode.conf.envsubst:ro
+
+secrets:
+  geonode-oidc-private-key:
+    file: ${NOXT_GEONODE_OIDC_PRIVATE_KEY_SOURCE:?Set the path to a private key file outside the repository}

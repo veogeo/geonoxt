@@ -1,0 +1,64 @@
+# Single local entry point for the GeoNode + GeoServer Cloud development stack.
+# Source services remain in their upstream Compose files; this file combines them
+# under one Compose project and one service-discovery network.
+name: geonode-cloud-oidc
+
+include:
+  - path:
+      - ./docker-compose.yml
+      - ./docker-compose.geoserver-cloud.yml
+    project_directory: .
+    env_file: ./.env_dev
+  - path:
+      - ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/compose/compose.yml
+      - ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/compose/catalog-datadir.yml
+      - ./docker-compose.geoserver-cloud-runtime.yml
+    project_directory: ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/compose
+    env_file: ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/compose/.env
+
+# Reuse GeoNode's persistent data and the existing Cloud catalog, cache, and ACL DB.
+# The shared-volume names are configurable for another workstation or deployment.
+volumes:
+  geoserver_data:
+    name: ${NOXT_GEOSERVER_CLOUD_DATA_VOLUME:-geonode-cloud-oidc-geoserver-data}
+  geowebcache_data:
+    name: ${NOXT_GEOSERVER_CLOUD_CACHE_VOLUME:-geonode-cloud-oidc-geowebcache-data}
+  geodatabase_data:
+    name: ${NOXT_GEOSERVER_CLOUD_ACL_DB_VOLUME:-geonode-cloud-oidc-acl-db}
+  catalog_datadir:
+    name: geonode-cloud-oidc-catalog
+
+# Start reconciliation and publishing only after Cloud's gateway (network alias
+# geoserver:9090), ACL, and
+# REST catalog service are healthy. The remaining GeoServer services are brought up
+# by the Cloud project's own dependencies.
+services:
+  # Selenium is part of this same stack so dev and integration tests share one network.
+  selenium:
+    image: selenium/standalone-firefox:4.52.0-20261101
+    shm_size: 2gb
+    restart: unless-stopped
+    environment:
+      SE_NODE_MAX_SESSIONS: "1"
+      SE_NODE_OVERRIDE_MAX_SESSIONS: "true"
+
+  # LDAP is only used by GeoServer Cloud's sample authentication setup.
+  ldap:
+    profiles:
+      - test-auth
+  django:
+    depends_on:
+      acl:
+        condition: service_healthy
+      geoserver:
+        condition: service_healthy
+      restconfig:
+        condition: service_healthy
+  celery:
+    depends_on:
+      acl:
+        condition: service_healthy
+      geoserver:
+        condition: service_healthy
+      restconfig:
+        condition: service_healthy

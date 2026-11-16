@@ -918,7 +918,7 @@ g+gp5fQ4nmDrSNHjakzQCX2mKMsx/GLWZzoIDd7ECV9f
     ),
 }
 if NOXT_GEOSERVER_CLOUD_ENABLED:
-    OAUTH2_PROVIDER["OAUTH2_VALIDATOR_CLASS"] = "geonode.base.oauth.GeoNodeCloudOAuth2Validator"
+    OAUTH2_PROVIDER["OAUTH2_VALIDATOR_CLASS"] = "geonode.base.oauth_validators.GeoNodeCloudOAuth2Validator"
 
 if NOXT_GEOSERVER_CLOUD_ENABLED and not OAUTH2_PROVIDER["OIDC_RSA_PRIVATE_KEY"]:
     raise ImproperlyConfigured(

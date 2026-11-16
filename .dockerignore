@@ -7,3 +7,11 @@ docs
 .celerybeat-*
 
 scripts/spcgeonode/_volume_*
+
+# Local configuration, credentials, and working-copy metadata are injected at runtime.
+.env*
+**/.env*
+**/secrets
+**/secrets/**
+.git
+**/.git

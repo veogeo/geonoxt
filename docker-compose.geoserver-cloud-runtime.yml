@@ -1,0 +1,228 @@
+# Optional overlay applied to the GeoServer Cloud Compose project.
+# Invoke it with the Cloud compose files and NOXT_GEONODE_REPO_PATH set to this checkout.
+x-geoserver-cloud-acl-client-environment: &geoserver-cloud-acl-client-environment
+  SPRING_PROFILES_ACTIVE: "${GEOSERVER_DEFAULT_PROFILES},datadir,discovery-consul"
+  GEOSERVER_ADMIN_USERNAME: ${NOXT_GEOSERVER_ADMIN_USER:-admin}
+  GEOSERVER_ADMIN_PASSWORD: ${NOXT_GEOSERVER_ADMIN_PASSWORD:?Set the GeoServer REST admin password}
+  ACL_USERNAME: geoserver
+  ACL_PASSWORD: ${NOXT_GEOSERVER_ADMIN_PASSWORD:?Set the GeoServer REST admin password}
+  # Keep the legacy opaque GeoNode OAuth2 extension disabled; JWT is handled by bearer-auth.
+  GEOSERVER_SECURITY_GEONODE_ENABLED: "false"
+  GEOSERVER_EXTENSION_SECURITY_BEARERAUTH_ENABLED: "${NOXT_GEOSERVER_CLOUD_BEARER_AUTH_ENABLED:-false}"
+  GEOSERVER_EXTENSION_SECURITY_BEARERAUTH_ISSUERURI: "${NOXT_GEOSERVER_CLOUD_ISSUER_URI:-${SITEURL}/o/}"
+  GEOSERVER_EXTENSION_SECURITY_BEARERAUTH_JWKSETURI: "${NOXT_GEOSERVER_CLOUD_JWK_SET_URI:-http://django:8000/o/.well-known/jwks.json}"
+  GEOSERVER_EXTENSION_SECURITY_BEARERAUTH_AUDIENCE: "${NOXT_GEOSERVER_CLOUD_AUDIENCE:-geoserver-cloud}"
+  GEOSERVER_EXTENSION_SECURITY_BEARERAUTH_USERNAMECLAIM: "${NOXT_GEOSERVER_CLOUD_USERNAME_CLAIM:-preferred_username}"
+  GEOSERVER_EXTENSION_SECURITY_BEARERAUTH_ROLESCLAIM: "${NOXT_GEOSERVER_CLOUD_ROLES_CLAIM:-groups}"
+  GEOSERVER_EXTENSION_SECURITY_BEARERAUTH_ROLEPREFIX: "${NOXT_GEOSERVER_CLOUD_ROLE_PREFIX:-ROLE_}"
+  GEOSERVER_EXTENSION_SECURITY_BEARERAUTH_ROLEMAPPINGS_ADMIN: "${NOXT_GEOSERVER_CLOUD_ROLE_MAPPINGS_ADMIN:-ADMIN}"
+  GEOSERVER_EXTENSION_SECURITY_BEARERAUTH_ROLEMAPPINGS_AUTHENTICATED: "${NOXT_GEOSERVER_CLOUD_ROLE_MAPPINGS_AUTHENTICATED:-AUTHENTICATED}"
+  GEOSERVER_EXTENSION_SECURITY_BEARERAUTH_ROLEMAPPINGS_PRIVATE_READERS: "${NOXT_GEOSERVER_CLOUD_ROLE_MAPPINGS_PRIVATE_READERS:-PRIVATE_READERS}"
+
+x-geonode-statics-volume: &geonode-statics-volume
+  - type: volume
+    source: geonode_statics
+    target: /mnt/volumes/statics
+    read_only: true
+
+x-geoserver-cloud-wps-volumes: &geoserver-cloud-wps-volumes
+  - ${NOXT_GEONODE_REPO_PATH:?Set NOXT_GEONODE_REPO_PATH to the GeoNode checkout}/docker/geoserver-cloud-wps-urlchecks.xml:/opt/app/data_directory/security/urlchecks.xml:ro
+  - type: volume
+    source: geonode_statics
+    target: /mnt/volumes/statics
+    read_only: true
+
+x-geoserver-cloud-wms-gwc-volumes: &geoserver-cloud-wms-gwc-volumes
+  - ${NOXT_GEONODE_REPO_PATH:?Set NOXT_GEONODE_REPO_PATH to the GeoNode checkout}/docker/geoserver-cloud-gwc-gs.xml:/opt/app/data_directory/gwc-gs.xml:ro
+  - type: volume
+    source: geonode_statics
+    target: /mnt/volumes/statics
+    read_only: true
+
+x-geoserver-cloud-catalog-volumes: &geoserver-cloud-catalog-volumes
+  - catalog_datadir:/opt/app/data_directory
+  - geoserver_data:/opt/geoserver_data
+  - geowebcache_data:/opt/geowebcache_data
+  - ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/compose/secrets/aws:/opt/app/home/.aws
+
+services:
+  init-datadir:
+    volumes: !override
+      - catalog_datadir:/opt/app/data_directory
+      - ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/compose/catalog-datadir.tgz:/tmp/datadir.tgz
+
+  consul:
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+
+  config:
+    image: ${NOXT_GEOSERVER_CLOUD_REPOSITORY:-ghcr.io/veogeo}/geoserver-cloud-config:${NOXT_GEOSERVER_CLOUD_TAG:-latest}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    environment:
+      LOGGING_CONFIG: ""
+      CONFIG_NATIVE_PATH: file:/etc/geoserver
+    volumes: !override
+      - ${NOXT_GEONODE_REPO_PATH:?Set NOXT_GEONODE_REPO_PATH to the GeoNode checkout}/docker/geoserver-cloud-config:/etc/geoserver:ro
+      - ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/config:/opt/geoserver-cloud-config-upstream:ro
+
+  acl:
+    environment:
+      ACL_USERS_ADMIN_PASSWORD: "{noop}${NOXT_GEOSERVER_ACL_PASSWORD:?Set the GeoServer ACL admin password}"
+      ACL_USERS_GEOSERVER_PASSWORD: "{noop}${NOXT_GEOSERVER_ADMIN_PASSWORD:?Set the GeoServer REST admin password}"
+
+  webui:
+    image: ${NOXT_GEOSERVER_CLOUD_REPOSITORY:-ghcr.io/veogeo}/geoserver-cloud-webui:${NOXT_GEOSERVER_CLOUD_TAG:-latest}
+    depends_on:
+      django:
+        condition: service_healthy
+    environment:
+      PROXY_BASE_URL: ${SITEURL:?Set SITEURL to the public origin}/geoserver/cloud
+      SITEURL: ${SITEURL:?Set SITEURL to the public origin}
+      NOXT_GEOSERVER_CLOUD_ISSUER_URI: "${NOXT_GEOSERVER_CLOUD_ISSUER_URI:-${SITEURL}/o/}"
+      NOXT_GEOSERVER_CLOUD_DISCOVERY_URI: "${NOXT_GEOSERVER_CLOUD_DISCOVERY_URI:-${NOXT_GEOSERVER_CLOUD_ISSUER_URI:-${SITEURL}/o/}/.well-known/openid-configuration/}"
+      NOXT_GEOSERVER_CLOUD_OIDC_CLIENT_ID: ${NOXT_GEOSERVER_CLOUD_OIDC_CLIENT_ID:?Set the GeoServer Cloud OIDC client id}
+      NOXT_GEOSERVER_CLOUD_OIDC_CLIENT_SECRET: ${NOXT_GEOSERVER_CLOUD_OIDC_CLIENT_SECRET:?Set the GeoServer Cloud OIDC client secret}
+      NOXT_GEOSERVER_CLOUD_OIDC_ROLE_CONVERTER: ${NOXT_GEOSERVER_CLOUD_OIDC_ROLE_CONVERTER:-private_readers=ROLE_PRIVATE_READERS}
+      <<: *geoserver-cloud-acl-client-environment
+      GEOSERVER_EXTENSION_SECURITY_OIDCLOGIN_ENABLED: "${NOXT_GEOSERVER_CLOUD_OIDC_WEB_LOGIN_ENABLED:-false}"
+    volumes: !override
+      - catalog_datadir:/opt/app/data_directory
+      - ${NOXT_GEONODE_REPO_PATH:?Set NOXT_GEONODE_REPO_PATH to the GeoNode checkout}/docker/geoserver-cloud-layers.properties:/opt/app/data_directory/security/layers.properties:ro
+      - geoserver_data:/opt/geoserver_data
+      - geowebcache_data:/opt/geowebcache_data
+      - ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/compose/secrets/aws:/opt/app/home/.aws
+      - type: volume
+        source: geonode_statics
+        target: /mnt/volumes/statics
+        read_only: true
+
+  wfs:
+    image: ${NOXT_GEOSERVER_CLOUD_REPOSITORY:-ghcr.io/veogeo}/geoserver-cloud-wfs:${NOXT_GEOSERVER_CLOUD_TAG:-latest}
+    environment: *geoserver-cloud-acl-client-environment
+    volumes: !override
+      - catalog_datadir:/opt/app/data_directory
+      - ${NOXT_GEONODE_REPO_PATH:?Set NOXT_GEONODE_REPO_PATH to the GeoNode checkout}/docker/geoserver-cloud-layers.properties:/opt/app/data_directory/security/layers.properties:ro
+      - geoserver_data:/opt/geoserver_data
+      - geowebcache_data:/opt/geowebcache_data
+      - ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/compose/secrets/aws:/opt/app/home/.aws
+      - type: volume
+        source: geonode_statics
+        target: /mnt/volumes/statics
+        read_only: true
+
+  wcs:
+    image: ${NOXT_GEOSERVER_CLOUD_REPOSITORY:-ghcr.io/veogeo}/geoserver-cloud-wcs:${NOXT_GEOSERVER_CLOUD_TAG:-latest}
+    environment: *geoserver-cloud-acl-client-environment
+    volumes: !override
+      - catalog_datadir:/opt/app/data_directory
+      - ${NOXT_GEONODE_REPO_PATH:?Set NOXT_GEONODE_REPO_PATH to the GeoNode checkout}/docker/geoserver-cloud-layers.properties:/opt/app/data_directory/security/layers.properties:ro
+      - geoserver_data:/opt/geoserver_data
+      - geowebcache_data:/opt/geowebcache_data
+      - ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/compose/secrets/aws:/opt/app/home/.aws
+      - type: volume
+        source: geonode_statics
+        target: /mnt/volumes/statics
+        read_only: true
+
+  restconfig:
+    image: ${NOXT_GEOSERVER_CLOUD_REPOSITORY:-ghcr.io/veogeo}/geoserver-cloud-rest:${NOXT_GEOSERVER_CLOUD_TAG:-latest}
+    environment: *geoserver-cloud-acl-client-environment
+    volumes: !override
+      - catalog_datadir:/opt/app/data_directory
+      - ${NOXT_GEONODE_REPO_PATH:?Set NOXT_GEONODE_REPO_PATH to the GeoNode checkout}/docker/geoserver-cloud-layers.properties:/opt/app/data_directory/security/layers.properties:ro
+      - geoserver_data:/opt/geoserver_data
+      - geowebcache_data:/opt/geowebcache_data
+      - ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/compose/secrets/aws:/opt/app/home/.aws
+      - type: volume
+        source: geonode_statics
+        target: /mnt/volumes/statics
+        read_only: true
+
+  wps:
+    image: ${NOXT_GEOSERVER_CLOUD_REPOSITORY:-ghcr.io/veogeo}/geoserver-cloud-wps:${NOXT_GEOSERVER_CLOUD_TAG:-latest}
+    environment: *geoserver-cloud-acl-client-environment
+    volumes: !override
+      - catalog_datadir:/opt/app/data_directory
+      - ${NOXT_GEONODE_REPO_PATH:?Set NOXT_GEONODE_REPO_PATH to the GeoNode checkout}/docker/geoserver-cloud-layers.properties:/opt/app/data_directory/security/layers.properties:ro
+      - geoserver_data:/opt/geoserver_data
+      - geowebcache_data:/opt/geowebcache_data
+      - ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/compose/secrets/aws:/opt/app/home/.aws
+      - ${NOXT_GEONODE_REPO_PATH:?Set NOXT_GEONODE_REPO_PATH to the GeoNode checkout}/docker/geoserver-cloud-wps-urlchecks.xml:/opt/app/data_directory/security/urlchecks.xml:ro
+      - type: volume
+        source: geonode_statics
+        target: /mnt/volumes/statics
+        read_only: true
+
+  wms:
+    image: ${NOXT_GEOSERVER_CLOUD_REPOSITORY:-ghcr.io/veogeo}/geoserver-cloud-wms:${NOXT_GEOSERVER_CLOUD_TAG:-latest}
+    environment: *geoserver-cloud-acl-client-environment
+    volumes: !override
+      - catalog_datadir:/opt/app/data_directory
+      - ${NOXT_GEONODE_REPO_PATH:?Set NOXT_GEONODE_REPO_PATH to the GeoNode checkout}/docker/geoserver-cloud-layers.properties:/opt/app/data_directory/security/layers.properties:ro
+      - geoserver_data:/opt/geoserver_data
+      - geowebcache_data:/opt/geowebcache_data
+      - ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/compose/secrets/aws:/opt/app/home/.aws
+      - ${NOXT_GEONODE_REPO_PATH:?Set NOXT_GEONODE_REPO_PATH to the GeoNode checkout}/docker/geoserver-cloud-gwc-gs.xml:/opt/app/data_directory/gwc-gs.xml:ro
+      - type: volume
+        source: geonode_statics
+        target: /mnt/volumes/statics
+        read_only: true
+
+  gwc:
+    image: ${NOXT_GEOSERVER_CLOUD_REPOSITORY:-ghcr.io/veogeo}/geoserver-cloud-gwc:${NOXT_GEOSERVER_CLOUD_TAG:-latest}
+    environment: *geoserver-cloud-acl-client-environment
+    volumes: !override
+      - catalog_datadir:/opt/app/data_directory
+      - ${NOXT_GEONODE_REPO_PATH:?Set NOXT_GEONODE_REPO_PATH to the GeoNode checkout}/docker/geoserver-cloud-layers.properties:/opt/app/data_directory/security/layers.properties:ro
+      - geoserver_data:/opt/geoserver_data
+      - geowebcache_data:/opt/geowebcache_data
+      - ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/compose/secrets/aws:/opt/app/home/.aws
+      - ${NOXT_GEONODE_REPO_PATH:?Set NOXT_GEONODE_REPO_PATH to the GeoNode checkout}/docker/geoserver-cloud-gwc-gs.xml:/opt/app/data_directory/gwc-gs.xml:ro
+      - type: volume
+        source: geonode_statics
+        target: /mnt/volumes/statics
+        read_only: true
+
+  # Keep the upstream key inactive; the single gateway is the `geoserver` service.
+  gateway:
+    profiles: !override
+      - legacy-cloud-gateway
+
+  geoserver:
+    image: ${NOXT_GEOSERVER_CLOUD_GATEWAY_IMAGE:-${NOXT_GEOSERVER_CLOUD_REPOSITORY:-ghcr.io/veogeo}/geoserver-cloud-gateway:${NOXT_GEOSERVER_CLOUD_TAG:-latest}}
+    user: ${GS_USER}
+    hostname: geoserver
+    depends_on: !override
+      config:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+    environment:
+      JAVA_OPTS: ${JAVA_OPTS_DEFAULT}
+      GEOSERVER_BASE_PATH: ${GEOSERVER_BASE_PATH}
+      SPRING_PROFILES_INCLUDE: config-first
+      SPRING_PROFILES_ACTIVE: "${GATEWAY_DEFAULT_PROFILES},discovery-consul"
+      SERVER_PORT: "9090"
+    ports: !override
+      - "${GATEWAY_PORT:-9090}:9090"
+    volumes: !override []
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f -s -o /dev/null localhost:8081/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    networks:
+      default:
+        aliases:
+          - geoserver
+
+volumes:
+  geonode_statics:
+    name: ${NOXT_GEONODE_STATICS_VOLUME:-geonode-cloud-oidc-statics}
