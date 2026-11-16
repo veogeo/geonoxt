@@ -1,0 +1,7 @@
+# GeoNode-local override for service discovery. Consul should test whether each
+# GeoServer Cloud process is alive, without including RabbitMQ's dependency check.
+spring:
+  cloud:
+    consul:
+      discovery:
+        health-check-path: /actuator/health/liveness

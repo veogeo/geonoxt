@@ -1,0 +1,9 @@
+<checks>
+  <regex>
+    <name>geonode-cloud-internal-wfs</name>
+    <description>Allow WPS remote inputs only from GeoServer Cloud Gateway WFS</description>
+    <enabled>true</enabled>
+    <regex>^http://geoserver:9090/geoserver/cloud/wfs(\?.*)?$</regex>
+  </regex>
+  <enabled>true</enabled>
+</checks>
