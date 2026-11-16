@@ -312,6 +312,9 @@ def geoserver_proxy(request, proxy_path, downstream_path, workspace=None, layern
         access_token=access_token,
         **kwargs,
     )
+    # Enforce this after proxy() because upstream errors bypass the response callback.
+    if response.has_header("Cache-Control"):
+        del response["Cache-Control"]
     return response
 
 

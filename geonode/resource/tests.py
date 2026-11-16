@@ -473,6 +473,11 @@ class TestResourceManager(GeoNodeBaseTestSupport):
         )
         self.assertTrue(
             permissions_registry.user_has_perm(
+                new_owner, doc.get_self_resource(), "change_resourcebase_metadata", include_virtual=True
+            )
+        )
+        self.assertTrue(
+            permissions_registry.user_has_perm(
                 new_owner, doc.get_self_resource(), "delete_resourcebase", include_virtual=True
             )
         )

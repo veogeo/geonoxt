@@ -635,8 +635,10 @@ class BaseResourceManager(ResourceManagerInterface):
         try:
             instance.set_dirty_state()
             perms = permissions_registry.get_perms(instance=instance, include_virtual=False)
-            if previous_owner and not previous_owner.is_superuser:
-                perms["users"].pop(previous_owner, None)
+            users = perms.setdefault("users", {})
+            users[new_owner] = list(perms_as_set(users.get(new_owner, [])) | perms_as_set(OWNER_PERMISSIONS))
+            if previous_owner and previous_owner != new_owner and not previous_owner.is_superuser:
+                users.pop(previous_owner, None)
             self.set_permissions(instance.uuid, instance, owner=new_owner, permissions=perms)
         except Exception as e:
             logger.exception(e)

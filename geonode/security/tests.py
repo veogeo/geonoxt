@@ -375,32 +375,34 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
             )
 
             access_token = get_or_create_token(admin)
-            response = self.client.get(reverse("users-list"), HTTP_AUTHORIZATION=f"Bearer {access_token.token}")
-            self.assertEqual(
-                response.status_code, 200, "LoginRequiredMiddleware passed the Bearer token without any issues"
-            )
+            with patch("geonode.base.oauth.authenticate_cloud_access_token", return_value=(admin, {})):
+                response = self.client.get(reverse("users-list"), HTTP_AUTHORIZATION=f"Bearer {access_token.token}")
+                self.assertEqual(
+                    response.status_code, 200, "LoginRequiredMiddleware passed the Bearer token without any issues"
+                )
 
             with override_settings(
                 ENABLE_APIKEY_LOGIN=True,
             ):
-                response = self.client.get(f"{reverse('users-list')}?apikey={access_token.token}")
-                self.assertEqual(
-                    response.status_code, 200, "LoginRequiredMiddleware passed the API Ley param without any issues"
-                )
+                with patch("geonode.base.oauth.authenticate_cloud_access_token", return_value=(admin, {})):
+                    response = self.client.get(f"{reverse('users-list')}?apikey={access_token.token}")
+                    self.assertEqual(
+                        response.status_code, 200, "LoginRequiredMiddleware passed the API Ley param without any issues"
+                    )
 
-                path = f"{reverse('users-list')}?apikey={access_token.token}"
-                response = self.client.post(
-                    path,
-                    data={
-                        "username": "user1withapyley",
-                        "password": "user1withapyley",
-                        "email": "user1withapyley@email.com",
-                    },
-                )
-                self.assertEqual(
-                    response.status_code, 201, "LoginRequiredMiddleware allowed the API Key to create a new user"
-                )
-                Profile.objects.get(username="user1withapyley").delete()  # cleanup
+                    path = f"{reverse('users-list')}?apikey={access_token.token}"
+                    response = self.client.post(
+                        path,
+                        data={
+                            "username": "user1withapyley",
+                            "password": "user1withapyley",
+                            "email": "user1withapyley@email.com",
+                        },
+                    )
+                    self.assertEqual(
+                        response.status_code, 201, "LoginRequiredMiddleware allowed the API Key to create a new user"
+                    )
+                    Profile.objects.get(username="user1withapyley").delete()  # cleanup
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
     def test_session_ctrl_middleware(self):
@@ -2028,6 +2030,7 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
             user = backend.authenticate(request, username="admin", password="admin")
             self.assertIsNone(user)
 
+    @override_settings(NOXT_GEOSERVER_CLOUD_ENABLED=False)
     def test_admin_whitelisted_access_middleware(self):
         from geonode.security.middleware import AdminAllowedMiddleware
 

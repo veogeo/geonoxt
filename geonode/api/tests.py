@@ -1168,6 +1168,7 @@ class AssetApiTests(GeoNodeBaseTestSupport):
         Ensure that when a file upload exceeds the size limit,
         no asset is created and a 400 error is returned.
         """
+        self.client.force_login(self.test_user)
         initial_asset_count = Asset.objects.count()
 
         uploadsizelimit_obj, _ = UploadSizeLimit.objects.update_or_create(
