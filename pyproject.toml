@@ -93,7 +93,7 @@ dependencies = [
     "geonode-pinax-notifications==6.0.0.4",
 
     # GeoNode org maintained apps.
-    "django_geonode_mapstore_client @ git+https://github.com/veogeo/geonoxt-mapstore-client.git@cg-vg",
+    "django_geonode_mapstore_client @ https://github.com/veogeo/geonoxt-mapstore-client/releases/download/mapstore-client-5.1.0.dev0-d2393e85888d/django_geonode_mapstore_client-5.1.0.dev0-py3-none-any.whl#sha256=146fede331aabe84eb7d10524676033e9e221b100497aa4afda4c3dacde1f30b",
     "django-avatar==8.0.1",
     "geonode-oauth-toolkit==2.2.3.1",
     "geonode-announcements==2.0.2.2",

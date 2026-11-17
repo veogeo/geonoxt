@@ -71,8 +71,6 @@ services:
     environment: *geonode-cloud-environment
     volumes: !override
       - .:/usr/src/geonode
-      - ${NOXT_MAPSTORE_CLIENT_REPO_PATH:?Set NOXT_MAPSTORE_CLIENT_REPO_PATH to the MapStore checkout}/geonode_mapstore_client/handlers.py:/usr/src/venv/lib/python3.12/site-packages/geonode_mapstore_client/handlers.py:ro
-      - ${NOXT_MAPSTORE_CLIENT_REPO_PATH:?Set NOXT_MAPSTORE_CLIENT_REPO_PATH to the MapStore checkout}/geonode_mapstore_client/tests.py:/usr/src/venv/lib/python3.12/site-packages/geonode_mapstore_client/tests.py:ro
       - statics:/mnt/volumes/statics
       - backup-restore:/backup_restore
       - data:/data
@@ -91,7 +89,6 @@ services:
       retries: 2
     volumes: !override
       - .:/usr/src/geonode
-      - ${NOXT_MAPSTORE_CLIENT_REPO_PATH:?Set NOXT_MAPSTORE_CLIENT_REPO_PATH to the MapStore checkout}/geonode_mapstore_client/handlers.py:/usr/src/venv/lib/python3.12/site-packages/geonode_mapstore_client/handlers.py:ro
       - statics:/mnt/volumes/statics
       - backup-restore:/backup_restore
       - data:/data
