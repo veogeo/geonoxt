@@ -24,16 +24,16 @@ Set the GeoNode `.env` values for the Cloud profile:
 NOXT_GEOSERVER_CLOUD_ENABLED=True
 GEOSERVER_LB_HOST_IP=geoserver
 GEOSERVER_LB_PORT=9090
-GEOSERVER_LOCATION=http://geoserver:9090/geoserver/cloud/
+GEOSERVER_LOCATION=http://geoserver:9090/geoserver/
 GEOSERVER_PUBLIC_LOCATION={siteurl}/geoserver/
-GEOSERVER_WEB_UI_LOCATION={siteurl}/geoserver/cloud/
+GEOSERVER_WEB_UI_LOCATION={siteurl}/geoserver/
 NOXT_GEOSERVER_ACL_ENABLED=True
 NOXT_GEOSERVER_ACL_URL=http://acl:8080/acl/
 NOXT_GEOSERVER_ACL_USER=admin
 NOXT_GEOSERVER_ACL_PASSWORD=<secret distinct from the GeoServer REST password>
 ```
 
-Replace `{siteurl}` with the externally reachable GeoNode origin. The gateway base path is `/geoserver/cloud`. The unified Compose names the gateway service `geoserver`; GeoNode and Nginx use `geoserver:9090`. GeoNode publishes `/geoserver/` URLs through Nginx on host port 80. The unified compose starts Django after Cloud's gateway, ACL service, and REST catalog report healthy. To reconcile permissions manually:
+Replace `{siteurl}` with the externally reachable GeoNode origin. The gateway base path is `/geoserver`, matching the public GeoNode URL. The unified Compose names the gateway service `geoserver`; GeoNode and Nginx use `geoserver:9090`. GeoNode publishes `/geoserver/` URLs through Nginx on host port 80. The unified compose starts Django after Cloud's gateway, ACL service, and REST catalog report healthy. To reconcile permissions manually:
 
 ```bash
 docker compose exec django python manage.py sync_security_rules
@@ -61,7 +61,7 @@ Interactive OIDC login for the GeoServer WebUI is a separate opt-in. Set `NOXT_G
 
 In the GeoServer WebUI filter, **Skip GeoServer login dialog** redirects unauthenticated browser requests straight to the identity provider; it is a convenience setting and is not needed to grant roles. **Enable Resource Server** makes that WebUI filter process Bearer tokens. This Compose deployment leaves that filter option off because the per-service Bearer JWT extension handles WMS/WFS/WCS/WPS/REST requests when `NOXT_GEOSERVER_CLOUD_BEARER_AUTH_ENABLED=true`. **Log Sensitive Information** can write tokens and claims to logs and should stay off. **Allow provider to log in the built-in admin account** controls whether an IdP principal named `admin` can receive GeoServer's administrator roles; the Compose runtime exposes this as `NOXT_GEOSERVER_CLOUD_OIDC_ALLOW_ADMIN_LOGIN`.
 
-To use an external OIDC provider, register both clients at that provider: a public PKCE client for MapStore and a confidential client for the GeoServer WebUI callback `SITEURL/geoserver/cloud/web/login/oauth2/code/geonode__oidc`. Set `NOXT_GEOSERVER_CLOUD_ISSUER_URI`, `NOXT_GEOSERVER_CLOUD_DISCOVERY_URI`, `NOXT_GEOSERVER_CLOUD_JWK_SET_URI` when needed, `NOXT_GEOSERVER_CLOUD_AUDIENCE`, `NOXT_MAPSTORE_OIDC_DISCOVERY_URI`, `NOXT_MAPSTORE_OIDC_CLIENT_ID`, `NOXT_MAPSTORE_OIDC_REDIRECT_URI`, and the GeoServer client ID/secret. Configure the provider to issue an access JWT with that exact issuer and audience, and configure its role claim with `NOXT_GEOSERVER_CLOUD_ROLES_CLAIM` plus explicit role mappings. If the provider supports RFC 8707 resource indicators, set `NOXT_MAPSTORE_OIDC_RESOURCE`; otherwise configure its client/audience policy so the access JWT contains the GeoServer audience. Its authorization and token endpoints must be reachable from the browser and the Cloud services.
+To use an external OIDC provider, register both clients at that provider: a public PKCE client for MapStore and a confidential client for the GeoServer WebUI callback `SITEURL/geoserver/web/login/oauth2/code/geonode__oidc`. Set `NOXT_GEOSERVER_CLOUD_ISSUER_URI`, `NOXT_GEOSERVER_CLOUD_DISCOVERY_URI`, `NOXT_GEOSERVER_CLOUD_JWK_SET_URI` when needed, `NOXT_GEOSERVER_CLOUD_AUDIENCE`, `NOXT_MAPSTORE_OIDC_DISCOVERY_URI`, `NOXT_MAPSTORE_OIDC_CLIENT_ID`, `NOXT_MAPSTORE_OIDC_REDIRECT_URI`, and the GeoServer client ID/secret. Configure the provider to issue an access JWT with that exact issuer and audience, and configure its role claim with `NOXT_GEOSERVER_CLOUD_ROLES_CLAIM` plus explicit role mappings. If the provider supports RFC 8707 resource indicators, set `NOXT_MAPSTORE_OIDC_RESOURCE`; otherwise configure its client/audience policy so the access JWT contains the GeoServer audience. Its authorization and token endpoints must be reachable from the browser and the Cloud services.
 
 The default role claim is `groups`, and the sample explicitly maps `admin`, `authenticated`, and `private_readers`. Add a mapping for each group or role the provider emits; unmapped claims do not grant GeoServer roles. GeoNode's legacy `api/o/v4/tokeninfo` endpoint is not wired to the Cloud gateway and no shared introspection key is configured.
 
@@ -69,7 +69,7 @@ The Compose overlay mounts the RSA key as a read-only secret into Django and Cel
 
 ## WPS remote inputs
 
-The runtime overlay mounts `docker/geoserver-cloud-wps-urlchecks.xml` into WPS. It permits remote WPS inputs only from `http://geoserver:9090/geoserver/cloud/wfs`, keeping the URL check enabled and preventing the WPS process from fetching arbitrary hosts. For layer inputs, request GeoJSON from WFS and declare `mimeType="application/json"`; the bearer token must be forwarded as an `Authorization` header in the WPS `Reference`. This avoids relaxing GeoServer's XML schema resolution restrictions. WPS verification for this deployment must use a private layer published in the `geonode` workspace.
+The runtime overlay mounts `docker/geoserver-cloud-wps-urlchecks.xml` into WPS. It permits remote WPS inputs only from `http://geoserver:9090/geoserver/wfs`, keeping the URL check enabled and preventing the WPS process from fetching arbitrary hosts. For layer inputs, request GeoJSON from WFS and declare `mimeType="application/json"`; the bearer token must be forwarded as an `Authorization` header in the WPS `Reference`. This avoids relaxing GeoServer's XML schema resolution restrictions. WPS verification for this deployment must use a private layer published in the `geonode` workspace.
 
 ## ACL mapping and validation
 

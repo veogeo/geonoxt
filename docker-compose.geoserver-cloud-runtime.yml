@@ -106,7 +106,7 @@ services:
       django:
         condition: service_healthy
     environment:
-      PROXY_BASE_URL: ${SITEURL:?Set SITEURL to the public origin}/geoserver/cloud
+      PROXY_BASE_URL: ${SITEURL:?Set SITEURL to the public origin}/geoserver
       SITEURL: ${SITEURL:?Set SITEURL to the public origin}
       NOXT_GEOSERVER_CLOUD_ISSUER_URI: "${NOXT_GEOSERVER_CLOUD_ISSUER_URI:-${SITEURL}/o/}"
       NOXT_GEOSERVER_CLOUD_DISCOVERY_URI: "${NOXT_GEOSERVER_CLOUD_DISCOVERY_URI:-}"
@@ -223,7 +223,7 @@ services:
         condition: service_healthy
     environment:
       JAVA_OPTS: ${JAVA_OPTS_DEFAULT:-}
-      GEOSERVER_BASE_PATH: ${GEOSERVER_BASE_PATH:-/geoserver/cloud}
+      GEOSERVER_BASE_PATH: ${GEOSERVER_BASE_PATH:-/geoserver}
       SPRING_PROFILES_INCLUDE: config-first
       SPRING_PROFILES_ACTIVE: "${GATEWAY_DEFAULT_PROFILES:-default},discovery-consul"
       SERVER_PORT: "9090"
