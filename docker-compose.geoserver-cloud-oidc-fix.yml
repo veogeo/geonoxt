@@ -1,0 +1,10 @@
+# Optional WebUI patch overlay. Build GeoServer Cloud's WebUI module first:
+# ./mvnw -pl src/apps/geoserver/webui -DskipTests package
+services:
+  webui:
+    image: ${NOXT_GEOSERVER_CLOUD_WEBUI_PATCH_IMAGE:-geoservercloud/geoserver-cloud-webui:ghcr-latest-oidc-admin-fix}
+    build:
+      context: ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/src/apps/geoserver/webui
+      dockerfile: Dockerfile.oidc-admin-config
+      args:
+        BASE_IMAGE: ${NOXT_GEOSERVER_CLOUD_WEBUI_BASE_IMAGE:-ghcr.io/veogeo/geoserver-cloud-webui:latest}
