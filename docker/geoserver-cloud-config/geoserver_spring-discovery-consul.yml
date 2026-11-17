@@ -2,6 +2,9 @@
 # GeoServer Cloud process is alive, without including RabbitMQ's dependency check.
 spring:
   cloud:
+    config:
+      allowOverride: true
+      overrideSystemProperties: false
     consul:
       discovery:
         health-check-path: /actuator/health/liveness

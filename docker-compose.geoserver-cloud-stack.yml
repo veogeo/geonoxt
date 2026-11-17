@@ -11,22 +11,26 @@ include:
     env_file: ./.env_dev
   - path:
       - ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/compose/compose.yml
-      - ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/compose/catalog-datadir.yml
+      - ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/compose/catalog-pgconfig.yml
       - ./docker-compose.geoserver-cloud-runtime.yml
     project_directory: ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/compose
     env_file: ${NOXT_GEOSERVER_CLOUD_REPO_PATH:?Set NOXT_GEOSERVER_CLOUD_REPO_PATH to the GeoServer Cloud checkout}/compose/.env
 
-# Reuse GeoNode's persistent data and the existing Cloud catalog, cache, and ACL DB.
-# The shared-volume names are configurable for another workstation or deployment.
+# Give this GeoServer Cloud profile its own clean GeoNode/PostGIS and pgconfig volumes.
+# Previous GeoNode and datadir volumes remain available for rollback.
 volumes:
+  statics:
+    name: ${NOXT_GEONODE_STATICS_VOLUME:-geonode-cloud-oidc-clean-statics}
+  data:
+    name: ${NOXT_GEONODE_DATA_VOLUME:-geonode-cloud-oidc-clean-data}
+  dbdata:
+    name: ${NOXT_GEONODE_DB_VOLUME:-geonode-cloud-oidc-postgis-db}
   geoserver_data:
-    name: ${NOXT_GEOSERVER_CLOUD_DATA_VOLUME:-geonode-cloud-oidc-geoserver-data}
+    name: ${NOXT_GEOSERVER_CLOUD_DATA_VOLUME:-geonode-cloud-oidc-pgconfig-geoserver-data}
   geowebcache_data:
-    name: ${NOXT_GEOSERVER_CLOUD_CACHE_VOLUME:-geonode-cloud-oidc-geowebcache-data}
+    name: ${NOXT_GEOSERVER_CLOUD_CACHE_VOLUME:-geonode-cloud-oidc-pgconfig-geowebcache-data}
   geodatabase_data:
-    name: ${NOXT_GEOSERVER_CLOUD_ACL_DB_VOLUME:-geonode-cloud-oidc-acl-db}
-  catalog_datadir:
-    name: geonode-cloud-oidc-catalog
+    name: ${NOXT_GEOSERVER_CLOUD_DB_VOLUME:-geonode-cloud-oidc-pgconfig-db}
 
 # Start reconciliation and publishing only after Cloud's gateway (network alias
 # geoserver:9090), ACL, and

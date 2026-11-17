@@ -837,20 +837,20 @@ NOXT_GEOSERVER_CLOUD_ISSUER_URI = os.getenv(
 _active_issuer_is_geonode = (
     NOXT_GEOSERVER_CLOUD_ISSUER_URI.rstrip("/") == _default_geonode_oidc_issuer.rstrip("/")
 )
-NOXT_GEOSERVER_CLOUD_DISCOVERY_URI = os.getenv(
-    "NOXT_GEOSERVER_CLOUD_DISCOVERY_URI",
+_configured_cloud_discovery_uri = os.getenv("NOXT_GEOSERVER_CLOUD_DISCOVERY_URI", "").strip()
+NOXT_GEOSERVER_CLOUD_DISCOVERY_URI = _configured_cloud_discovery_uri or (
     "http://django:8000/o/.well-known/openid-configuration/"
     if _active_issuer_is_geonode
-    else f"{NOXT_GEOSERVER_CLOUD_ISSUER_URI.rstrip('/')}/.well-known/openid-configuration/",
+    else f"{NOXT_GEOSERVER_CLOUD_ISSUER_URI.rstrip('/')}/.well-known/openid-configuration/"
 )
-NOXT_GEOSERVER_CLOUD_JWK_SET_URI = os.getenv(
-    "NOXT_GEOSERVER_CLOUD_JWK_SET_URI",
-    "http://django:8000/o/.well-known/jwks.json" if _active_issuer_is_geonode else "",
+_configured_cloud_jwk_set_uri = os.getenv("NOXT_GEOSERVER_CLOUD_JWK_SET_URI", "").strip()
+NOXT_GEOSERVER_CLOUD_JWK_SET_URI = _configured_cloud_jwk_set_uri or (
+    "http://django:8000/o/.well-known/jwks.json" if _active_issuer_is_geonode else ""
 )
 NOXT_MAPSTORE_OIDC_CLIENT_ID = os.getenv("NOXT_MAPSTORE_OIDC_CLIENT_ID", "noxt-mapstore-client").strip()
-NOXT_MAPSTORE_OIDC_DISCOVERY_URI = os.getenv(
-    "NOXT_MAPSTORE_OIDC_DISCOVERY_URI",
-    f"{NOXT_GEOSERVER_CLOUD_ISSUER_URI.rstrip('/')}/.well-known/openid-configuration/",
+_configured_mapstore_discovery_uri = os.getenv("NOXT_MAPSTORE_OIDC_DISCOVERY_URI", "").strip()
+NOXT_MAPSTORE_OIDC_DISCOVERY_URI = _configured_mapstore_discovery_uri or (
+    f"{NOXT_GEOSERVER_CLOUD_ISSUER_URI.rstrip('/')}/.well-known/openid-configuration/"
 )
 NOXT_MAPSTORE_OIDC_REDIRECT_URI = os.getenv(
     "NOXT_MAPSTORE_OIDC_REDIRECT_URI",
@@ -870,6 +870,8 @@ if NOXT_GEOSERVER_CLOUD_ENABLED:
 OAUTH2_PROVIDER = {
     "SCOPES": {
         "openid": "Default to OpenID",
+        "profile": "Access to your profile",
+        "email": "Access to your email address",
         "read": "Read scope",
         "write": "Write scope",
         "groups": "Access to your groups",
