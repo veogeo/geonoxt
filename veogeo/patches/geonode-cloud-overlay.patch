@@ -208,7 +208,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..5eed77d16b128d44a5ef8caccc13472c37bd2218
 --- /dev/null
 +++ b/docker-compose.geoserver-cloud-runtime.yml
-@@ -0,0 +1,246 @@
+@@ -0,0 +1,253 @@
 +# Optional overlay applied to the GeoServer Cloud Compose project.
 +# Invoke it with the Cloud compose files and NOXT_GEONODE_REPO_PATH set to this checkout.
 +x-geoserver-cloud-acl-client-environment: &geoserver-cloud-acl-client-environment
@@ -326,7 +326,14 @@ index 0000000000000000000000000000000000000000..5eed77d16b128d44a5ef8caccc13472c
 +      NOXT_GEOSERVER_CLOUD_OIDC_ALLOW_ADMIN_LOGIN: "${NOXT_GEOSERVER_CLOUD_OIDC_ALLOW_ADMIN_LOGIN:-false}"
 +      NOXT_GEOSERVER_CLOUD_OIDC_ROLE_CONVERTER: ${NOXT_GEOSERVER_CLOUD_OIDC_ROLE_CONVERTER:-admin=ROLE_ADMINISTRATOR;authenticated=ROLE_AUTHENTICATED;private_readers=ROLE_PRIVATE_READERS}
 +      <<: *geoserver-cloud-acl-client-environment
-+      GEOSERVER_EXTENSION_SECURITY_OIDCLOGIN_ENABLED: "${NOXT_GEOSERVER_CLOUD_OIDC_WEB_LOGIN_ENABLED:-false}"
++      GEOSERVER_EXTENSION_SECURITY_OIDC_LOGIN_ENABLED: "${NOXT_GEOSERVER_CLOUD_OIDC_WEB_LOGIN_ENABLED:-false}"
++      GEOSERVER_EXTENSION_SECURITY_OIDC_LOGIN_CLIENT_ID: ${NOXT_GEOSERVER_CLOUD_OIDC_CLIENT_ID:?Set the GeoServer Cloud OIDC client id}
++      GEOSERVER_EXTENSION_SECURITY_OIDC_LOGIN_CLIENT_SECRET: ${NOXT_GEOSERVER_CLOUD_OIDC_CLIENT_SECRET:?Set the GeoServer Cloud OIDC client secret}
++      GEOSERVER_EXTENSION_SECURITY_OIDC_LOGIN_ISSUER_URI: "${NOXT_GEOSERVER_CLOUD_ISSUER_URI:-${SITEURL}/o/}"
++      GEOSERVER_EXTENSION_SECURITY_OIDC_LOGIN_DISCOVERY_URI: "${NOXT_GEOSERVER_CLOUD_DISCOVERY_URI:-http://django:8000/o/.well-known/openid-configuration/}"
++      GEOSERVER_EXTENSION_SECURITY_OIDC_LOGIN_ALLOW_ADMIN_LOGIN: "${NOXT_GEOSERVER_CLOUD_OIDC_ALLOW_ADMIN_LOGIN:-false}"
++      GEOSERVER_EXTENSION_SECURITY_OIDC_LOGIN_ROLE_CONVERTER: "${NOXT_GEOSERVER_CLOUD_OIDC_ROLE_CONVERTER:-admin=ROLE_ADMINISTRATOR;authenticated=ROLE_AUTHENTICATED;private_readers=ROLE_PRIVATE_READERS}"
++      GEOSERVER_EXTENSION_SECURITY_OIDC_LOGIN_PUBLIC_URL: ${SITEURL:?Set SITEURL to the public origin}
 +    volumes: !override
 +      - ${NOXT_GEONODE_REPO_PATH:?Set NOXT_GEONODE_REPO_PATH to the GeoNode checkout}/docker/geoserver-cloud-layers.properties:/opt/app/data_directory/security/layers.properties:ro
 +      - geoserver_data:/opt/geoserver_data
