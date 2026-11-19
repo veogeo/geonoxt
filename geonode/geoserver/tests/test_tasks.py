@@ -7,7 +7,7 @@ from geonode.geoserver.tasks import (
     geoserver_set_style,
     synch_guardian,
 )
-from geonode.geoserver.acl_rules import Noxt_ACLRuleBatch
+from geonoxt.geoserver.acl_rules import Noxt_ACLRuleBatch
 from geonode.geoserver.signals import geoserver_automatic_default_style_set
 from geonode.layers.models import Dataset
 from geonode.layers.populate_datasets_data import create_dataset_data

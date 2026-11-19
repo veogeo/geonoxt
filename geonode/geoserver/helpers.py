@@ -81,8 +81,8 @@ from geonode.utils import (
     safe_request_url,
 )
 
-from .acl_rules import Noxt_ACLRuleManager
-from .noxt_acl import Noxt_GeoServerACLClient
+from geonoxt.geoserver.acl_rules import Noxt_ACLRuleManager
+from geonoxt.geoserver.acl_client import Noxt_GeoServerACLClient
 
 logger = logging.getLogger(__name__)
 

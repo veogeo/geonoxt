@@ -253,7 +253,7 @@ class BaseImporterEndToEndTest(ImporterBaseTestSupport):
 
             delete_dataset_cache(f"{settings.DEFAULT_WORKSPACE}:{layer_name}")
         self._cleanup_layers(layer_name)
-        from geonode.geoserver.acl_rules import Noxt_ACLRuleBatch
+        from geonoxt.geoserver.acl_rules import Noxt_ACLRuleBatch
         from geonode.geoserver.helpers import acl_client, acl_rule_manager
 
         acl_rules = [

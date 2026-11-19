@@ -167,7 +167,7 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["."]
 exclude = ["tests*"]
-include = ["geonode*"]
+include = ["geonode*", "geonoxt*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "geonode.__version_str__"}

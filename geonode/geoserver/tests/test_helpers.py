@@ -67,7 +67,7 @@ class Noxt_CreateWorkspaceTest(SimpleTestCase):
         workspace = Mock()
         response = Mock(status_code=201, text="")
         catalog = Mock()
-        catalog.service_url = "http://gateway:8080/geoserver/cloud/rest"
+        catalog.service_url = "http://gateway:8080/geoserver/rest"
         catalog.http_request.return_value = response
         catalog.get_workspaces.return_value = [workspace]
         catalog._cache = {f"{catalog.service_url}/workspaces.xml": "stale"}
@@ -77,7 +77,7 @@ class Noxt_CreateWorkspaceTest(SimpleTestCase):
 
         assert result is workspace
         catalog.http_request.assert_called_once_with(
-            "http://gateway:8080/geoserver/cloud/rest/workspaces",
+            "http://gateway:8080/geoserver/rest/workspaces",
             method="post",
             data="<workspace><name>geonode</name></workspace>",
             headers={"Content-Type": "application/xml"},

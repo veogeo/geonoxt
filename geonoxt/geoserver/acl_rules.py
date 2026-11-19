@@ -1,3 +1,5 @@
+"""GeoServer Cloud ACL rule models and batch helpers maintained by GeoNoXT."""
+
 #########################################################################
 # Native GeoServer Cloud ACL rule operations for GeoNode.
 #########################################################################

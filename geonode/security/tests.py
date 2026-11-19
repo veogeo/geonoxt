@@ -65,7 +65,7 @@ from geonode.resource.registry import resource_manager_registry, dataset_manager
 from geonode.tests.base import GeoNodeBaseTestSupport
 from geonode.groups.models import Group, GroupMember, GroupProfile
 from geonode.layers.populate_datasets_data import create_dataset_data
-from geonode.base.auth import create_auth_token, get_or_create_token
+from geonode.base.auth import create_auth_token, get_or_create_token, get_token_object_from_session
 from geonode.security.registry import permissions_registry
 from geonode.groups.conf import settings as groups_settings
 from geonode.security.permissions import _to_extended_perms
@@ -220,7 +220,7 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
         self.addCleanup(self.noxt_security_settings_override.disable)
         self.noxt_acl_server = Noxt_InMemoryACLServer()
         self.noxt_acl_request_patcher = patch(
-            "geonode.geoserver.noxt_acl.requests.request", side_effect=self.noxt_acl_server.request
+            "geonoxt.geoserver.acl_client.requests.request", side_effect=self.noxt_acl_server.request
         )
         self.noxt_acl_request_patcher.start()
         self.addCleanup(self.noxt_acl_request_patcher.stop)
@@ -375,7 +375,7 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
             )
 
             access_token = get_or_create_token(admin)
-            with patch("geonode.base.oauth.authenticate_cloud_access_token", return_value=(admin, {})):
+            with patch("geonoxt.oauth.authenticate_cloud_access_token", return_value=(admin, {})):
                 response = self.client.get(reverse("users-list"), HTTP_AUTHORIZATION=f"Bearer {access_token.token}")
                 self.assertEqual(
                     response.status_code, 200, "LoginRequiredMiddleware passed the Bearer token without any issues"
@@ -384,7 +384,7 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
             with override_settings(
                 ENABLE_APIKEY_LOGIN=True,
             ):
-                with patch("geonode.base.oauth.authenticate_cloud_access_token", return_value=(admin, {})):
+                with patch("geonoxt.oauth.authenticate_cloud_access_token", return_value=(admin, {})):
                     response = self.client.get(f"{reverse('users-list')}?apikey={access_token.token}")
                     self.assertEqual(
                         response.status_code, 200, "LoginRequiredMiddleware passed the API Ley param without any issues"
@@ -405,11 +405,12 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
                     Profile.objects.get(username="user1withapyley").delete()  # cleanup
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
+    @override_settings(NOXT_GEOSERVER_CLOUD_ENABLED=True)
     def test_session_ctrl_middleware(self):
         """
         Tests the Geonode session control authentication middleware.
         """
-        from geonode.security.middleware import SessionControlMiddleware
+        from geonoxt.middleware import SessionControlMiddleware
         from importlib import import_module
 
         engine = import_module(settings.SESSION_ENGINE)
@@ -427,21 +428,34 @@ class SecurityTests(ResourceTestCaseMixin, GeoNodeBaseTestSupport):
         request.session["access_token"] = None
         request.session.save()
         middleware.process_request(request)
-        self.assertTrue(request.session.is_empty())
+        self.assertFalse(request.session.is_empty())
+        self.assertIsNotNone(get_token_object_from_session(request.session))
 
-        # Test the full cycle through the client
+        from datetime import timedelta
+        from django.utils import timezone
+
+        old_token = get_token_object_from_session(request.session)
+        old_token_value = old_token.token
+        old_token.expires = timezone.now() - timedelta(seconds=1)
+        old_token.save(update_fields=["expires"])
+        middleware.process_request(request)
+        renewed_token = get_token_object_from_session(request.session)
+        self.assertIsNotNone(renewed_token)
+        self.assertNotEqual(renewed_token.token, old_token_value)
+        self.assertFalse(renewed_token.is_expired())
+
+        # A missing or expired auxiliary token does not end a valid Django login session.
         path = reverse("account_email")
         self.client.login(username="admin", password="admin")
         response = self.client.get(path)
         self.assertEqual(response.status_code, 200)
 
-        # Simulating Token expired (or not set)
         session_id = self.client.cookies.get(settings.SESSION_COOKIE_NAME)
         session = engine.SessionStore(session_id.value)
         session["access_token"] = None
         session.save()
         response = self.client.get(path)
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 200)
 
     @on_ogc_backend(geoserver.BACKEND_PACKAGE)
     def test_attributes_sats_refresh(self):

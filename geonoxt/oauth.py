@@ -1,3 +1,5 @@
+"""GeoNoXT OIDC/JWT extensions for GeoNode and GeoServer Cloud."""
+
 import uuid
 from functools import lru_cache
 

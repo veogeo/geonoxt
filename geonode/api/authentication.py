@@ -51,7 +51,7 @@ class OAuthAuthentication(Authentication):
             if auth_header and getattr(settings, "NOXT_GEOSERVER_CLOUD_ENABLED", False):
                 parts = auth_header.split()
                 if len(parts) == 2 and parts[0].lower() == "bearer":
-                    from geonode.base.oauth import authenticate_cloud_access_token
+                    from geonoxt.oauth import authenticate_cloud_access_token
 
                     try:
                         user, _claims = authenticate_cloud_access_token(parts[1])

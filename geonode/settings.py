@@ -765,17 +765,21 @@ AUTH_EXEMPT_URLS = (
 
 # Security stuff
 SESSION_EXPIRED_CONTROL_ENABLED = ast.literal_eval(os.environ.get("SESSION_EXPIRED_CONTROL_ENABLED", "True"))
+NOXT_GEOSERVER_CLOUD_ENABLED = ast.literal_eval(os.getenv("NOXT_GEOSERVER_CLOUD_ENABLED", "False"))
+if NOXT_GEOSERVER_CLOUD_ENABLED and "geonoxt" not in INSTALLED_APPS:
+    INSTALLED_APPS += ("geonoxt.apps.GeoNoxtConfig",)
 
 if SESSION_EXPIRED_CONTROL_ENABLED:
-    # This middleware checks for ACCESS_TOKEN validity and if expired forces
-    # user logout
-    MIDDLEWARE += ("geonode.security.middleware.SessionControlMiddleware",)
+    session_control_middleware = "geonode.security.middleware.SessionControlMiddleware"
+    if NOXT_GEOSERVER_CLOUD_ENABLED:
+        session_control_middleware = "geonoxt.middleware.SessionControlMiddleware"
+    MIDDLEWARE += (session_control_middleware,)
 
 # This middleware checks for basic auth or api key and if not present
 # It must be placed after the SessionMiddleware
 MIDDLEWARE += ("geonode.security.middleware.AuthenticateBasicAuthOrApiKeyMiddleware",)
 
-_cloud_cookie_default = ast.literal_eval(os.environ.get("NOXT_GEOSERVER_CLOUD_ENABLED", "False"))
+_cloud_cookie_default = NOXT_GEOSERVER_CLOUD_ENABLED
 _secure_cookie_default = str(SITEURL).lower().startswith("https://") if _cloud_cookie_default else True
 SESSION_COOKIE_SECURE = ast.literal_eval(os.environ.get("SESSION_COOKIE_SECURE", str(_secure_cookie_default)))
 CSRF_COOKIE_SECURE = ast.literal_eval(os.environ.get("CSRF_COOKIE_SECURE", str(_secure_cookie_default)))
@@ -821,9 +825,8 @@ AUTHENTICATION_BACKENDS = (
 if "announcements" in INSTALLED_APPS:
     AUTHENTICATION_BACKENDS += ("announcements.auth_backends.AnnouncementPermissionsBackend",)
 
-NOXT_GEOSERVER_CLOUD_ENABLED = ast.literal_eval(os.getenv("NOXT_GEOSERVER_CLOUD_ENABLED", "False"))
 NOXT_GEOSERVER_CLOUD_WFS_URL = os.getenv(
-    "NOXT_GEOSERVER_CLOUD_WFS_URL", "http://gateway:8080/geoserver/cloud/wfs"
+    "NOXT_GEOSERVER_CLOUD_WFS_URL", "http://gateway:8080/geoserver/wfs"
 )
 NOXT_GEOSERVER_CLOUD_AUDIENCE = os.getenv("NOXT_GEOSERVER_CLOUD_AUDIENCE", "geoserver-cloud")
 NOXT_GEOSERVER_CLOUD_USERNAME_CLAIM = os.getenv(
@@ -861,11 +864,11 @@ NOXT_MAPSTORE_OIDC_SCOPES = os.getenv("NOXT_MAPSTORE_OIDC_SCOPES", "openid group
 
 if NOXT_GEOSERVER_CLOUD_ENABLED:
     REST_FRAMEWORK["DEFAULT_AUTHENTICATION_CLASSES"] = [
-        "geonode.base.oauth.GeoNodeCloudJWTAuthentication",
+        "geonoxt.oauth.GeoNodeCloudJWTAuthentication",
         "rest_framework.authentication.BasicAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ]
-    AUTHENTICATION_BACKENDS += ("geonode.base.oauth.GeoNodeCloudJWTBackend",)
+    AUTHENTICATION_BACKENDS += ("geonoxt.oauth.GeoNodeCloudJWTBackend",)
 
 OAUTH2_PROVIDER = {
     "SCOPES": {
@@ -879,7 +882,7 @@ OAUTH2_PROVIDER = {
     },
     "CLIENT_ID_GENERATOR_CLASS": "oauth2_provider.generators.ClientIdGenerator",
     "ACCESS_TOKEN_GENERATOR": (
-        "geonode.base.oauth.geonode_cloud_access_token_generator" if NOXT_GEOSERVER_CLOUD_ENABLED else None
+        "geonoxt.oauth.geonode_cloud_access_token_generator" if NOXT_GEOSERVER_CLOUD_ENABLED else None
     ),
     "REFRESH_TOKEN_GENERATOR": (
         "oauthlib.oauth2.rfc6749.tokens.random_token_generator" if NOXT_GEOSERVER_CLOUD_ENABLED else None
@@ -920,7 +923,7 @@ g+gp5fQ4nmDrSNHjakzQCX2mKMsx/GLWZzoIDd7ECV9f
     ),
 }
 if NOXT_GEOSERVER_CLOUD_ENABLED:
-    OAUTH2_PROVIDER["OAUTH2_VALIDATOR_CLASS"] = "geonode.base.oauth_validators.GeoNodeCloudOAuth2Validator"
+    OAUTH2_PROVIDER["OAUTH2_VALIDATOR_CLASS"] = "geonoxt.oauth_validators.GeoNodeCloudOAuth2Validator"
 
 if NOXT_GEOSERVER_CLOUD_ENABLED and not OAUTH2_PROVIDER["OIDC_RSA_PRIVATE_KEY"]:
     raise ImproperlyConfigured(

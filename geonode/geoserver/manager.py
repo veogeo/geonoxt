@@ -45,7 +45,7 @@ from geonode.security.permissions import (
 from geonode.resource.manager import BaseResourceManager, ResourceManagerInterface
 from geonode.resource.utils import is_remote_resource
 from geonode.geoserver.signals import acl_rule_assign
-from .acl_rules import Noxt_ACLAutoPriorityBatch
+from geonoxt.geoserver.acl_rules import Noxt_ACLAutoPriorityBatch
 from .tasks import (
     geoserver_set_style,
     geoserver_delete_map,

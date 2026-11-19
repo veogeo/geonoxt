@@ -1,16 +1,16 @@
 """Prepare and clean the disposable GeoNode + GeoServer Cloud test state."""
 
-from datetime import timedelta
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import quote, urlsplit, urlunsplit
 import xml.etree.ElementTree as ET
 
 import requests
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.db import connections
-from django.utils import timezone
-from oauth2_provider.models import AccessToken
+from geonoxt.oauth import geonode_cloud_access_token_generator
 from psycopg2 import sql
 
 NOXT_CLOUD_TEST_DATABASES = ("test_geonode", "test_geonode_data")
@@ -147,19 +147,17 @@ def noxt_check_test_environment():
         noxt_path = os.environ.get(noxt_path_variable)
         if not noxt_path or not Path(noxt_path).is_file():
             raise RuntimeError(f"Missing test token file configured by {noxt_path_variable}")
-        noxt_token = Path(noxt_path).read_text(encoding="utf-8").strip()
-        if not noxt_token:
-            raise RuntimeError(f"Test token file configured by {noxt_path_variable} is empty")
-        noxt_record = AccessToken.objects.select_related("user", "application").get(
-            token=noxt_token, user__username=noxt_username
+        noxt_user = get_user_model()._default_manager.filter(username=noxt_username, is_active=True).first()
+        if noxt_user is None:
+            raise RuntimeError(f"Missing active test account for {noxt_username}")
+        noxt_token = geonode_cloud_access_token_generator(
+            SimpleNamespace(user=noxt_user, expires_in=24 * 60 * 60, scopes=["read", "write"])
         )
-        if not noxt_record.user.is_active or not noxt_record.application_id:
-            raise RuntimeError(f"Test OAuth token for {noxt_username} is not linked to an active test account")
-        noxt_minimum_expiry = timezone.now() + timedelta(hours=12)
-        if noxt_record.expires < noxt_minimum_expiry:
-            noxt_record.expires = noxt_minimum_expiry
-            noxt_record.save(update_fields=["expires"])
-        print(f"Bearer test token ready for {noxt_username}; expires {noxt_record.expires.isoformat()}.")
+        noxt_token_path = Path(noxt_path)
+        noxt_token_path.parent.mkdir(parents=True, exist_ok=True)
+        noxt_token_path.write_text(noxt_token + "\n", encoding="utf-8")
+        noxt_token_path.chmod(0o600)
+        print(f"GeoNode Bearer JWT ready for {noxt_username}; expires in 24 hours.")
 
     noxt_remote_url = os.environ.get("NOXT_SELENIUM_REMOTE_URL")
     if not noxt_remote_url:
@@ -192,7 +190,7 @@ def noxt_clean_cloud_test_catalog():
             + ", ".join(sorted(noxt_overlap))
         )
 
-    from geonode.geoserver.noxt_acl import Noxt_GeoServerACLClient
+    from geonoxt.geoserver.acl_client import Noxt_GeoServerACLClient
 
     noxt_acl = Noxt_GeoServerACLClient(
         settings.NOXT_GEOSERVER_ACL_URL,

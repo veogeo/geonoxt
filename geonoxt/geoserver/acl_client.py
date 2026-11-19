@@ -1,3 +1,5 @@
+"""GeoNoXT client for the GeoServer Cloud ACL service."""
+
 #########################################################################
 # GeoServer Cloud ACL REST client for GeoNode security synchronization.
 #########################################################################

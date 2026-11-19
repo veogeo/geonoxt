@@ -14,7 +14,7 @@ class Command(BaseCommand):
             raise CommandError("Set NOXT_GEOSERVER_CLOUD_ENABLED=True before configuring the Cloud OAuth client.")
         client_id = os.getenv("NOXT_GEOSERVER_CLOUD_OIDC_CLIENT_ID", "").strip()
         client_secret = os.getenv("NOXT_GEOSERVER_CLOUD_OIDC_CLIENT_SECRET", "")
-        redirect_uri = settings.SITEURL.rstrip("/") + "/geoserver/cloud/web/login/oauth2/code/geonode__oidc"
+        redirect_uri = settings.SITEURL.rstrip("/") + "/geoserver/web/login/oauth2/code/geonode__oidc"
         if not client_id or not client_secret:
             raise CommandError("Set the Cloud OIDC client id and client secret.")
 

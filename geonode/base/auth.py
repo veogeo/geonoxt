@@ -41,7 +41,7 @@ def extract_user_from_headers(request):
             and auth_header
             and auth_header.lower().startswith("bearer ")
         ):
-            from geonode.base.oauth import authenticate_cloud_access_token
+            from geonoxt.oauth import authenticate_cloud_access_token
 
             try:
                 user, _claims = authenticate_cloud_access_token(auth_header.split(None, 1)[1])

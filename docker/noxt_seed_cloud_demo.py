@@ -1,14 +1,13 @@
-"""Create reusable manual/demo GeoNode accounts, datasets, and Cloud bearer tokens."""
+"""Create reusable manual/demo GeoNode accounts, datasets, and Cloud Bearer JWTs."""
 
 import os
-import secrets
 import shutil
 import subprocess
 import tempfile
 import time
 import xml.etree.ElementTree as ET
-from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import requests
 
@@ -18,10 +17,10 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import override_settings
 from django.urls import reverse
-from django.utils import timezone
 from oauth2_provider.models import AccessToken, Application
 from rest_framework.test import APIClient
 
+from geonoxt.oauth import geonode_cloud_access_token_generator
 from geonode.layers.models import Dataset
 from geonode.resource.models import ExecutionRequest
 
@@ -69,14 +68,13 @@ for noxt_username, noxt_env in (
         raise CommandError(f"Set {noxt_env} in .env_test_cloud.")
     noxt_path = Path(noxt_path_value)
     noxt_path.parent.mkdir(parents=True, exist_ok=True)
-    noxt_token = secrets.token_urlsafe(36)
     AccessToken.objects.filter(user=noxt_users[noxt_username], application=noxt_application).delete()
-    AccessToken.objects.create(
-        user=noxt_users[noxt_username],
-        application=noxt_application,
-        token=noxt_token,
-        expires=timezone.now() + timedelta(days=365),
-        scope="read write",
+    noxt_token = geonode_cloud_access_token_generator(
+        SimpleNamespace(
+            user=noxt_users[noxt_username],
+            expires_in=365 * 24 * 60 * 60,
+            scopes=["read", "write"],
+        )
     )
     noxt_path.write_text(noxt_token + "\n", encoding="utf-8")
     noxt_path.chmod(0o600)

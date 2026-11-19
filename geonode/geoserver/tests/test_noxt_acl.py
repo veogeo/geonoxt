@@ -3,8 +3,8 @@ from unittest.mock import Mock, patch
 from django.core.management.base import CommandError
 from django.test import SimpleTestCase, override_settings
 
-from geonode.geoserver.acl_rules import Noxt_ACLRule, Noxt_ACLRuleBatch, Noxt_ACLAutoPriorityBatch
-from geonode.geoserver.noxt_acl import Noxt_GeoServerACLClient, Noxt_GeoServerACLException
+from geonoxt.geoserver.acl_rules import Noxt_ACLRule, Noxt_ACLRuleBatch, Noxt_ACLAutoPriorityBatch
+from geonoxt.geoserver.acl_client import Noxt_GeoServerACLClient, Noxt_GeoServerACLException
 from geonode.geoserver.helpers import _create_acl_client
 from geonode.geoserver.management.commands.set_all_datasets_public import Command as SetAllDatasetsPublicCommand
 
@@ -81,7 +81,7 @@ class NoxtACLNativeAPIContractTest(SimpleTestCase):
         response = Mock(ok=True)
         response.json.return_value = [{"id": "r1", "priority": 7, "user": "alice", "layer": "private"}]
         response.headers = {}
-        with patch("geonode.geoserver.noxt_acl.requests.request", return_value=response) as request:
+        with patch("geonoxt.geoserver.acl_client.requests.request", return_value=response) as request:
             result = client.get_rules(workspace="ws", layer="private")
         assert result == {"rules": [{"id": "r1", "priority": 7, "user": "alice", "layer": "private"}]}
         assert request.call_args.kwargs["json"] == {
@@ -95,7 +95,7 @@ class NoxtACLNativeAPIContractTest(SimpleTestCase):
         client = Noxt_GeoServerACLClient("http://acl:8080/acl", "admin", "password")
         response = Mock(ok=True)
         response.json.return_value = {"count": 3}
-        with patch("geonode.geoserver.noxt_acl.requests.request", return_value=response) as request:
+        with patch("geonoxt.geoserver.acl_client.requests.request", return_value=response) as request:
             assert client.get_rules_count() == 3
         assert request.call_args.args[:2] == ("POST", "http://acl:8080/acl/api/rules/query/count")
 
@@ -173,13 +173,13 @@ class NoxtACLNativeAPIContractTest(SimpleTestCase):
         first.headers = {"X-ACL-NEXTCURSOR": "page-2"}
         second.json.return_value = {"rules": [{"id": "r2"}]}
         second.headers = {}
-        with patch("geonode.geoserver.noxt_acl.requests.request", side_effect=[first, second]) as request:
+        with patch("geonoxt.geoserver.acl_client.requests.request", side_effect=[first, second]) as request:
             assert client.get_rules() == {"rules": [{"id": "r1"}, {"id": "r2"}]}
         assert request.call_count == 2
         assert request.call_args_list[1].kwargs["params"]["nextCursor"] == "page-2"
 
     def test_layer_rule_cleanup_requires_exact_workspace_and_layer(self):
-        from geonode.geoserver.acl_rules import Noxt_ACLRuleManager
+        from geonoxt.geoserver.acl_rules import Noxt_ACLRuleManager
 
         client = Mock()
         client.get_rules.return_value = {"rules": [
