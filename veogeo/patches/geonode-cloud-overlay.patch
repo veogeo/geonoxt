@@ -16,7 +16,7 @@ index 7d2e8d9944b87118cbfc1044a881d16152a09454..20ebd0a08ceefeb60643976d4699a263
 +**/.git
 diff --git a/.env.geoserver-cloud.sample b/.env.geoserver-cloud.sample
 new file mode 100644
-index 0000000000000000000000000000000000000000..f3671d2c47fcbc84eff69560740a8e3d6e5ca63e
+index 0000000000000000000000000000000000000000..51000b92a643df87214c5692019cd16bcddf824b
 --- /dev/null
 +++ b/.env.geoserver-cloud.sample
 @@ -0,0 +1,71 @@
@@ -47,8 +47,8 @@ index 0000000000000000000000000000000000000000..f3671d2c47fcbc84eff69560740a8e3d
 +NOXT_GEONODE_DATA_VOLUME=geonode-cloud-oidc-clean-data
 +NOXT_GEONODE_CLOUD_IMAGE=geonode/geonode:cloud-oidc-local-26.04
 +NOXT_GEOSERVER_CLOUD_REPOSITORY=ghcr.io/veogeo
-+NOXT_GEOSERVER_CLOUD_TAG=latest
-+NOXT_GEOSERVER_CLOUD_GATEWAY_IMAGE=ghcr.io/veogeo/geoserver-cloud-gateway:latest
++NOXT_GEOSERVER_CLOUD_TAG=cn-vg-8a7eda94a7887305677ad6b492da53b5c220dae0
++NOXT_GEOSERVER_CLOUD_GATEWAY_IMAGE=ghcr.io/veogeo/geoserver-cloud-gateway:cn-vg-8a7eda94a7887305677ad6b492da53b5c220dae0
 +# Bearer JWT validation is performed by each GeoServer service.
 +NOXT_GEOSERVER_CLOUD_BEARER_AUTH_ENABLED=true
 +# Interactive OIDC login in the GeoServer WebUI is independently optional.
@@ -8772,7 +8772,7 @@ index 34c60541102c025c154f0b3c405a3b1b1c3df75a..718640e7fc7bf405c52a36e1e94a1f03
 <VEOGEO_BLANK_CONTEXT>
      def __getitem__(self, alias):
 diff --git a/pyproject.toml b/pyproject.toml
-index 11da64f5572380da7066c4948ca248ee4d0498a9..76387c37decf1de9ecf4b292be9882be8975e77b 100644
+index 11da64f5572380da7066c4948ca248ee4d0498a9..dba349889f30fc384f658b34e5e53c3d0f117f7a 100644
 --- a/pyproject.toml
 +++ b/pyproject.toml
 @@ -93,7 +93,7 @@ dependencies = [
@@ -8780,7 +8780,7 @@ index 11da64f5572380da7066c4948ca248ee4d0498a9..76387c37decf1de9ecf4b292be9882be
 <VEOGEO_BLANK_CONTEXT>
      # GeoNode org maintained apps.
 -    "django_geonode_mapstore_client @ https://github.com/GeoNode/geonode-mapstore-client/archive/refs/heads/master.zip",
-+    "django_geonode_mapstore_client @ https://github.com/veogeo/geonoxt-mapstore-client/releases/download/mapstore-client-5.1.0.dev0-d2393e85888d/django_geonode_mapstore_client-5.1.0.dev0-py3-none-any.whl#sha256=146fede331aabe84eb7d10524676033e9e221b100497aa4afda4c3dacde1f30b",
++    "django_geonode_mapstore_client @ https://github.com/veogeo/geonoxt-mapstore-client/releases/download/mapstore-client-5.1.0.dev0-fd9b014f1937/django_geonode_mapstore_client-5.1.0.dev0-py3-none-any.whl#sha256=5694223a9e050bbc7644952ac744b7fc7c04ccd8fc7eb3bdd4f0c732518e1715",
      "django-avatar==8.0.1",
      "geonode-oauth-toolkit==2.2.3.1",
      "geonode-announcements==2.0.2.2",
